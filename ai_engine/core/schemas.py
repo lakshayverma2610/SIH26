@@ -46,3 +46,11 @@ class InferenceResult(BaseModel):
     fraud_probability: float = Field(..., ge=0.0, le=1.0)
     is_high_risk: bool
     reasons: List[str] = Field(default_factory=list)
+
+class CashoutPrediction(BaseModel):
+    """
+    Strict schema representing the geospatial prediction of a mule cash-out.
+    """
+    h3_hex_id: str = Field(..., description="Uber H3 Hexagon ID (Resolution 9)")
+    decayed_risk_score: float = Field(..., ge=0.0, le=1.0, description="Risk score adjusted by Hawkes Process decay")
+    predicted_time_window: str = Field(..., description="Expected temporal window for cash-out (e.g., 'T+0 to T+45 mins')")
