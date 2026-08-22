@@ -106,7 +106,7 @@ def train_model():
     with open(model_path, "wb") as f:
         pickle.dump(clf, f)
         
-    print(f"\n✅ Model saved to {model_path}")
+    print(f"\n[OK] Model saved to {model_path}")
 
 if __name__ == "__main__":
     train_model()
