@@ -20,7 +20,7 @@ export default function ThreatMap({ hotspots, selected, onSelect }) {
       })}
       {hotspots.map((hotspot) => <CircleMarker key={`${hotspot.h3_cell}-core`} center={[hotspot.lat, hotspot.lon]} radius={4} pathOptions={{ color: risk(hotspot.risk_score).color, fillOpacity: 1 }} />)}
       {hotspots.filter((item) => item.h3_cell === selected).flatMap((item) => item.nearby_atms || []).map((atm) => (
-        <Marker key={atm.terminal_id} position={[atm.lat, atm.lon]} icon={atmIcon}><Popup><b>{atm.bank}</b><br />{atm.terminal_id}</Popup></Marker>
+        <Marker key={atm.id} position={[atm.lat, atm.lon]} icon={atmIcon}><Popup><b>{atm.bank}</b><br />{atm.id}{atm.address && <><br />{atm.address}</>}</Popup></Marker>
       ))}
     </MapContainer>
   )

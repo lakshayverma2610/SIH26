@@ -20,6 +20,8 @@ The default `.env.example` enables demo mode, so the UI works without the backen
 
 Supported WebSocket events: `INITIAL_STATE`, `NEW_TRANSACTION`, `NEW_ALERT`, and `HOTSPOTS_UPDATED`.
 
+The dashboard also responds to `COMPLAINT_REGISTERED`, `PATROL_DISPATCHED`, and `LIEN_PLACED` operational events. Hotspots accept both the harmonized backend fields and the enriched Graph-DB fields, including GeoJSON boundaries, Res-9 cells, mule account lists, and ranked ATM metadata.
+
 ## Checks
 
 ```bash

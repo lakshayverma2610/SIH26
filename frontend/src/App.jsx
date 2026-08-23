@@ -20,7 +20,7 @@ function Metric({ icon: Icon, label, value, tone = 'cyan' }) {
 }
 
 function App() {
-  const { transactions, hotspots, status, metrics, runScenario, resetDemo } = useAlertStream()
+  const { transactions, hotspots, status, metrics, latestAction, runScenario, resetDemo } = useAlertStream()
   const [selected, setSelected] = useState(null)
   const selectedHotspot = hotspots.find((item) => item.h3_cell === selected) || null
   const totalRisk = useMemo(() => hotspots.reduce((sum, item) => sum + Number(item.total_amount || 0), 0), [hotspots])
@@ -72,6 +72,8 @@ function App() {
         <span>WEBSOCKET: {status}</span>
         <span>LAST EVENT: {transactions[0]?.timestamp ? new Date(transactions[0].timestamp * 1000).toLocaleTimeString('en-IN') : '—'}</span>
       </footer>
+
+      {latestAction && <div className="event-toast"><ShieldAlert size={15} /><span><b>{latestAction.type.replaceAll('_', ' ')}</b>{latestAction.dispatch?.message || latestAction.lien?.message || latestAction.complaint?.complaint_type || 'Operational state updated'}</span></div>}
 
       {selectedHotspot && <ClusterDrilldown hotspot={selectedHotspot} onClose={() => setSelected(null)} />}
     </main>
