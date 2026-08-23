@@ -26,6 +26,7 @@ export function normalizeHotspot(hotspot = {}) {
     total_amount: hotspot.total_amount ?? hotspot.total_funds_at_risk ?? 0,
     unique_mule_accounts: hotspot.unique_mule_accounts ?? hotspot.mule_count ?? 0,
     event_count: hotspot.event_count ?? hotspot.mule_count ?? 0,
+    average_fraud_probability: hotspot.average_fraud_probability ?? hotspot.raw_geojson_feature?.properties?.risk_score ?? hotspot.aggregate_risk_score ?? hotspot.risk_score ?? 0,
     polygon_coordinates: toLeafletBoundary(hotspot),
     nearby_atms: (hotspot.nearby_atms || hotspot.nearest_atms || []).map(normalizeAtm),
   }

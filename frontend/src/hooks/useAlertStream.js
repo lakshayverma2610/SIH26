@@ -10,6 +10,7 @@ export function useAlertStream() {
   const [transactions, setTransactions] = useState(mockMode ? mockTransactions.map(normalizeTransaction) : [])
   const [hotspots, setHotspots] = useState(mockMode ? mockHotspots.map(normalizeHotspot) : [])
   const [metrics, setMetrics] = useState({})
+  const [actionHistory, setActionHistory] = useState({ total_dispatches: 0, total_liens: 0 })
   const [latestAction, setLatestAction] = useState(null)
   const [status, setStatus] = useState(mockMode ? 'DEMO' : 'CONNECTING')
   const retry = useRef(0)
@@ -46,13 +47,17 @@ export function useAlertStream() {
         timer = setTimeout(connect, delay)
       }
     }
-    Promise.allSettled([
-      fetch(`${apiUrl}/api/v1/hotspots/active`).then((response) => response.ok ? response.json() : Promise.reject()).then((data) => setHotspots((data.hotspots || []).map(normalizeHotspot))),
-      fetch(`${apiUrl}/api/v1/transactions/recent?limit=50`).then((response) => response.ok ? response.json() : Promise.reject()).then((data) => setTransactions([...(data.transactions || [])].reverse().map(normalizeTransaction))),
-      fetch(`${apiUrl}/api/v1/system/status`).then((response) => response.ok ? response.json() : Promise.reject()).then((data) => setMetrics(data.metrics || {})),
+    const fetchJson = (path) => fetch(`${apiUrl}${path}`).then((response) => response.ok ? response.json() : Promise.reject())
+    const refreshRestState = () => Promise.allSettled([
+      fetchJson('/api/v1/hotspots/active').then((data) => setHotspots((data.hotspots || []).map(normalizeHotspot))),
+      fetchJson('/api/v1/transactions/recent?limit=50').then((data) => setTransactions([...(data.transactions || [])].reverse().map(normalizeTransaction))),
+      fetchJson('/api/v1/system/status').then((data) => setMetrics(data.metrics || {})),
+      fetchJson('/api/v1/actions/history').then(setActionHistory),
     ])
+    refreshRestState()
+    const refreshTimer = setInterval(refreshRestState, 15000)
     connect()
-    return () => { stopped = true; clearTimeout(timer); socket?.close() }
+    return () => { stopped = true; clearTimeout(timer); clearInterval(refreshTimer); socket?.close() }
   }, [consume])
 
   const runScenario = (kind) => {
@@ -63,6 +68,6 @@ export function useAlertStream() {
     setMetrics((value) => ({ ...value, total_transactions_ingested: (value.total_transactions_ingested || transactions.length) + 1, total_high_risk_flagged: (value.total_high_risk_flagged || transactions.filter((tx) => tx.is_high_risk).length) + 1 }))
   }
 
-  const resetDemo = () => { setTransactions(mockTransactions.map(normalizeTransaction)); setHotspots(mockHotspots.map(normalizeHotspot)); setMetrics({}); setLatestAction(null) }
-  return { transactions, hotspots, metrics, status, latestAction, runScenario, resetDemo }
+  const resetDemo = () => { setTransactions(mockTransactions.map(normalizeTransaction)); setHotspots(mockHotspots.map(normalizeHotspot)); setMetrics({}); setActionHistory({ total_dispatches: 0, total_liens: 0 }); setLatestAction(null) }
+  return { transactions, hotspots, metrics, actionHistory, status, latestAction, runScenario, resetDemo }
 }

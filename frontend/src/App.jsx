@@ -20,7 +20,7 @@ function Metric({ icon: Icon, label, value, tone = 'cyan' }) {
 }
 
 function App() {
-  const { transactions, hotspots, status, metrics, latestAction, runScenario, resetDemo } = useAlertStream()
+  const { transactions, hotspots, status, metrics, actionHistory, latestAction, runScenario, resetDemo } = useAlertStream()
   const [selected, setSelected] = useState(null)
   const selectedHotspot = hotspots.find((item) => item.h3_cell === selected) || null
   const totalRisk = useMemo(() => hotspots.reduce((sum, item) => sum + Number(item.total_amount || 0), 0), [hotspots])
@@ -54,6 +54,13 @@ function App() {
             <div className="legend-row"><i className="dot critical" /> Imminent cash-out <b>85%+</b></div>
             <div className="legend-row"><i className="dot warning" /> Elevated activity <b>65–84%</b></div>
             <div className="legend-row"><i className="dot watch" /> Under observation <b>&lt;65%</b></div>
+          </div>
+          <div className="intel-block graph-status">
+            <div className="section-heading"><span>GRAPH INTELLIGENCE</span></div>
+            <div className="legend-row">ST radius <b>1.0 KM</b></div>
+            <div className="legend-row">Rolling window <b>30 MIN</b></div>
+            <div className="legend-row">Patrol dispatches <b>{actionHistory.total_dispatches || 0}</b></div>
+            <div className="legend-row">Liens placed <b>{actionHistory.total_liens || 0}</b></div>
           </div>
           <div className="coverage"><span>MONITORING REGION</span><strong>Delhi NCR</strong><small>28.6139° N · 77.2090° E</small></div>
         </aside>
