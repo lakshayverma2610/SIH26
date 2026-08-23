@@ -129,7 +129,8 @@ class StreamOrchestrator:
                 self.flagged_events_buffer.pop(0)
 
             # Recalculate active H3 hotspots
-            self.active_hotspots = self.geo_predictor.aggregate_hotspots(self.flagged_events_buffer)
+            raw_hotspots = self.geo_predictor.aggregate_hotspots(self.flagged_events_buffer)
+            self.active_hotspots = self._adapt_hotspots(raw_hotspots)
 
             # Broadcast instant alert to all connected dashboards (preserves NEW_ALERT schema)
             alert_payload = {
@@ -169,6 +170,50 @@ class StreamOrchestrator:
             res = await self.process_transaction(tx)
             results.append(res)
         return results
+
+    def _adapt_hotspots(self, raw_hotspots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Adapts the output from the new GeospatialPredictor to match the legacy schema
+        expected by the Frontend Dashboard and existing tests.
+        """
+        adapted = []
+        for hs in raw_hotspots:
+            # If it's already in the legacy format, skip adapting
+            if "h3_cell" in hs and "polygon_coordinates" in hs:
+                adapted.append(hs)
+                continue
+                
+            # Map the new schema to the legacy schema
+            legacy_hs = {
+                "h3_cell": hs.get("h3_res9") or hs.get("h3_res8") or hs.get("cluster_id"),
+                "lat": hs.get("center_lat", 0.0),
+                "lon": hs.get("center_lon", 0.0),
+                "risk_score": hs.get("aggregate_risk_score", 0.0),
+                "event_count": hs.get("mule_count", 0),
+                "total_amount": hs.get("total_funds_at_risk", 0.0),
+                "unique_mule_accounts": len(hs.get("mule_accounts", [])),
+                "resolution": 9,
+                "polygon_coordinates": hs.get("h3_boundary", {}).get("coordinates", [[]])[0] if hs.get("h3_boundary") else [],
+                "predicted_cashout_window": {
+                    "start_time": "",
+                    "end_time": hs.get("predicted_cashout_window", ""),
+                    "eta_minutes": 20
+                }
+            }
+            
+            # Map nearby ATMs
+            nearby_atms = []
+            for atm in hs.get("nearest_atms", []):
+                nearby_atms.append({
+                    "terminal_id": atm.get("atm_id", "UNKNOWN"),
+                    "bank": atm.get("bank_name", "UNKNOWN"),
+                    "lat": atm.get("lat", 0.0),
+                    "lon": atm.get("lon", 0.0)
+                })
+            legacy_hs["nearby_atms"] = nearby_atms
+            adapted.append(legacy_hs)
+            
+        return adapted
 
     async def register_complaint(self, complaint_data: Dict[str, Any]) -> Dict[str, Any]:
         """

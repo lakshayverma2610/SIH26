@@ -108,3 +108,42 @@ def get_action_history():
         "dispatches": orchestrator.dispatched_patrols,
         "liens": orchestrator.placed_liens
     }
+
+@router.get(
+    "/trace/{account_no}",
+    summary="Multi-Hop Money Mule Flow Trace"
+)
+def get_graph_trace(account_no: str):
+    """
+    Returns a multi-hop money flow tree (Layer 1 -> Layer 2 -> Terminal ATM).
+    """
+    # Placeholder for actual Neo4j / NetworkX graph traversal
+    import random
+    return {
+        "status": "SUCCESS",
+        "account_no": account_no,
+        "trace": [
+            {
+                "hop": 1,
+                "layer": "Victim / Source",
+                "account": f"ACC_VICTIM_{random.randint(100, 999)}",
+                "amount_transferred": random.randint(50000, 200000)
+            },
+            {
+                "hop": 2,
+                "layer": "Layer-1 Mule",
+                "account": account_no,
+                "amount_transferred": random.randint(50000, 200000)
+            },
+            {
+                "hop": 3,
+                "layer": "Terminal Egress / ATM",
+                "account": f"ATM_{random.randint(100, 999)}",
+                "cashout_location": {
+                    "lat": 28.6304,
+                    "lon": 77.2773
+                }
+            }
+        ]
+    }
+
