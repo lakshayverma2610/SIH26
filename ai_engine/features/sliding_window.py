@@ -1,6 +1,6 @@
 import time
 from collections import defaultdict, deque
-from typing import Dict, Set, Tuple
+from typing import Dict, Set, Tuple, Any
 
 from ai_engine.core.config import settings
 from ai_engine.core.logger import get_logger
@@ -34,6 +34,31 @@ class SlidingWindowFeatureEngine:
     def register_metadata(self, metadata: AccountMetadata) -> None:
         """Cache account metadata for quick access during feature extraction."""
         self._account_metadata[metadata.account_id] = metadata
+
+    def register_account_metadata(self, account_id: str, dormant_days: int = 0, kyc_verified: bool = True) -> None:
+        """Convenience method to cache account metadata using raw primitives."""
+        self.register_metadata(AccountMetadata(account_id=account_id, dormant_days=dormant_days, kyc_verified=kyc_verified))
+
+    def process_and_extract(self, tx_data: Dict[str, Any] | TransactionEvent) -> ExtractedFeatures:
+        """
+        Convenience adapter that accepts either a dict or a TransactionEvent.
+        """
+        if isinstance(tx_data, dict):
+            raw_ts = tx_data.get("timestamp")
+            ts = float(raw_ts) if raw_ts is not None else time.time()
+            event = TransactionEvent(
+                tx_id=str(tx_data.get("tx_id", f"TX_{int(time.time()*1000)}")),
+                src_acc=str(tx_data.get("src_acc", "")),
+                dest_acc=str(tx_data.get("dest_acc", "")),
+                amount=float(tx_data.get("amount", 0.0)),
+                timestamp=ts,
+                channel=str(tx_data.get("channel", "UPI")),
+                device_id=tx_data.get("device_id"),
+                ip_address=tx_data.get("ip") or tx_data.get("ip_address")
+            )
+        else:
+            event = tx_data
+        return self.process_transaction(event)
 
     def process_transaction(self, event: TransactionEvent) -> ExtractedFeatures:
         """

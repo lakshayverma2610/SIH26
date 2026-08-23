@@ -85,11 +85,15 @@ class MuleScorer:
 
         # Step B: Heuristic Override
         # Hard business logic enforcing that high fan-out coupled with a dormancy break is definitively fraud.
-        if features.fan_out_degree > 4 and features.dormancy_break == 1:
+        if features.fan_out_degree >= 4 and features.dormancy_break == 1:
             fraud_prob = 0.99
             is_high_risk = True
             reasons.append("CRITICAL: Dormancy break with rapid fan-out")
             logger.warning("Heuristic override triggered: Rapid fan-out + Dormancy break", extra={"tx_id": features.tx_id})
+        elif features.dormancy_break == 1 and features.kyc_risk == 1:
+            fraud_prob = max(fraud_prob, 0.85)
+            is_high_risk = True
+            reasons.append("HIGH RISK: Dormancy break on unverified/non-KYC account")
 
         # Step C: Standard Threshold Check
         if fraud_prob > 0.75:
@@ -122,3 +126,19 @@ class MuleScorer:
         )
 
         return result
+
+    def score_features(self, features: ExtractedFeatures | dict) -> dict:
+        """
+        Convenience adapter for legacy dictionary-based interfaces.
+        """
+        if isinstance(features, dict):
+            features_obj = ExtractedFeatures(**features)
+        else:
+            features_obj = features
+        res = self.score(features_obj)
+        return {
+            "tx_id": res.tx_id,
+            "fraud_probability": res.fraud_probability,
+            "is_high_risk": res.is_high_risk,
+            "reasons": res.reasons
+        }
