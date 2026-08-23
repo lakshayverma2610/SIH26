@@ -129,13 +129,19 @@ def test_active_hotspots_endpoint():
     assert data["status"] == "SUCCESS"
     assert "hotspots" in data
     assert isinstance(data["hotspots"], list)
+    if data["hotspots"]:
+        hs = data["hotspots"][0]
+        assert "polygon_coordinates" in hs
+        assert "predicted_cashout_window" in hs
 
 def test_dispatch_patrol_action():
     payload = {
         "h3_cell": "8860145b59fffff",
         "patrol_unit_id": "PCR-NORTH-04",
         "priority": "CRITICAL",
-        "notes": "Suspect mule cash withdrawal activity reported near Connaught Place ATM cluster."
+        "notes": "Suspect mule cash withdrawal activity reported near Connaught Place ATM cluster.",
+        "destination_lat": 28.6328,
+        "destination_lon": 77.2197
     }
     response = client.post("/api/v1/actions/dispatch-patrol", json=payload)
     assert response.status_code == 200
@@ -144,6 +150,9 @@ def test_dispatch_patrol_action():
     assert data["h3_cell"] == "8860145b59fffff"
     assert data["patrol_unit_id"] == "PCR-NORTH-04"
     assert "cad_call_id" in data
+    assert "google_maps_url" in data
+    assert "https://www.google.com/maps/dir/?api=1" in data["google_maps_url"]
+    assert data["destination"]["lat"] == 28.6328
 
 def test_freeze_lien_action():
     payload = {
@@ -158,6 +167,20 @@ def test_freeze_lien_action():
     assert data["status"] == "LIEN_PLACED"
     assert data["account_number"] == "ACC_SUSPECT_999"
     assert "lien_id" in data
+    assert data["atm_daily_limit"] == "₹0.00"
+
+def test_freeze_batch_liens_action():
+    payload = {
+        "account_numbers": ["ACC_MULE_L2_01", "ACC_MULE_L2_02", "ACC_MULE_L2_03"],
+        "system": "CFCFRMS-1930",
+        "reason": "Multi-Layer Mule Syndicate Convergence"
+    }
+    response = client.post("/api/v1/actions/freeze-lien", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "LIEN_PLACED"
+    assert len(data["accounts_affected"]) == 3
+    assert "ACC_MULE_L2_01" in data["accounts_affected"]
 
 def test_action_history():
     response = client.get("/api/v1/actions/history")
@@ -180,3 +203,25 @@ def test_websocket_alerts_connection():
         ws.send_text("ping")
         resp = ws.receive_text()
         assert resp == "pong"
+
+def test_websocket_live_transaction_broadcast():
+    with client.websocket_connect("/ws/alerts") as ws:
+        # Drain initial state
+        _ = ws.receive_json()
+
+        # Ingest a live transaction
+        tx = {
+            "tx_id": "TX_WS_FEED_01",
+            "src_acc": "ACC_WS_USER",
+            "dest_acc": "ACC_WS_MERCHANT",
+            "amount": 550.0,
+            "channel": "UPI"
+        }
+        res = client.post("/api/v1/transactions/stream", json=tx)
+        assert res.status_code == 200
+
+        # Verify WebSocket receives NEW_TRANSACTION broadcast
+        msg = ws.receive_json()
+        assert msg["type"] == "NEW_TRANSACTION"
+        assert msg["transaction"]["tx_id"] == "TX_WS_FEED_01"
+        assert msg["transaction"]["amount"] == 550.0

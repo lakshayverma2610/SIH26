@@ -45,32 +45,14 @@ class StreamOrchestrator:
         self.placed_liens: List[Dict[str, Any]] = []
 
         # 4. System Metrics
+        self.start_time = time.time()
         self.total_transactions_ingested = 0
         self.total_high_risk_flagged = 0
         self.total_ncrp_complaints_ingested = 0
-        self.start_time = time.time()
-
-        # 5. Load Initial Accounts Metadata if available
-        self._load_accounts_metadata()
-
-    def _load_accounts_metadata(self):
-        if ACCOUNTS_DATA_PATH.exists():
-            try:
-                with open(ACCOUNTS_DATA_PATH, "r", encoding="utf-8") as f:
-                    acc_list = json.load(f)
-                    for acc in acc_list:
-                        self.feature_engine.register_account_metadata(
-                            acc.get("account_number", ""),
-                            acc.get("dormant_days", 0),
-                            acc.get("kyc_verified", True)
-                        )
-                logger.info(f"Pre-loaded {len(acc_list)} accounts into SlidingWindowFeatureEngine metadata.")
-            except Exception as e:
-                logger.warning(f"Could not load accounts metadata: {e}")
 
     async def process_transaction(self, tx_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Orchestrate end-to-end pipeline for a single in-flight transaction.
+        Ingest, score, buffer, and dispatch live transactions and geospatial alerts.
         """
         self.total_transactions_ingested += 1
         tx_id = tx_data.get("tx_id", f"TXN_{int(time.time()*1000)}")
@@ -91,12 +73,17 @@ class StreamOrchestrator:
         is_high_risk = score_res["is_high_risk"]
         reasons = list(score_res.get("reasons", []))
 
-        # Check if destination account has an active 1930 NCRP complaint
+        # Check if destination or source account has an active 1930 NCRP complaint
         if dest_acc in self.ncrp_complaints:
             is_high_risk = True
             fraud_prob = max(fraud_prob, 0.95)
             complaint_info = self.ncrp_complaints[dest_acc]
             reasons.append(f"Linked to NCRP 1930 Complaint ({complaint_info.get('complaint_type', 'CYBER_FRAUD')})")
+        elif src_acc in self.ncrp_complaints:
+            is_high_risk = True
+            fraud_prob = max(fraud_prob, 0.90)
+            complaint_info = self.ncrp_complaints[src_acc]
+            reasons.append(f"Source linked to NCRP 1930 Complaint ({complaint_info.get('complaint_type', 'CYBER_FRAUD')})")
 
         # Step 3: Record transaction in sliding buffer (last 100)
         tx_summary = {
@@ -117,7 +104,14 @@ class StreamOrchestrator:
         if len(self.recent_transactions) > MAX_RECENT_TRANSACTIONS:
             self.recent_transactions.pop(0)
 
-        # Step 4: If High Risk, buffer for geospatial cash-out clustering & trigger alerts
+        # Step 4: Broadcast every transaction to live feed for Sneha's dashboard
+        asyncio.create_task(ws_manager.broadcast({
+            "type": "NEW_TRANSACTION",
+            "transaction": tx_summary,
+            "timestamp": time.time()
+        }))
+
+        # Step 5: If High Risk, buffer for geospatial cash-out clustering & trigger alerts
         if is_high_risk:
             self.total_high_risk_flagged += 1
             self.flagged_events_buffer.append({
@@ -133,7 +127,7 @@ class StreamOrchestrator:
             # Recalculate active H3 hotspots
             self.active_hotspots = self.geo_predictor.aggregate_hotspots(self.flagged_events_buffer)
 
-            # Broadcast instant alert to all connected dashboards
+            # Broadcast instant alert to all connected dashboards (preserves NEW_ALERT schema)
             alert_payload = {
                 "type": "NEW_ALERT",
                 "transaction": tx_summary,
@@ -141,6 +135,15 @@ class StreamOrchestrator:
                 "timestamp": time.time()
             }
             asyncio.create_task(ws_manager.broadcast(alert_payload))
+
+            # Broadcast dedicated hotspots update event for map layer refresh
+            hotspots_payload = {
+                "type": "HOTSPOTS_UPDATED",
+                "hotspots": self.active_hotspots,
+                "count": len(self.active_hotspots),
+                "timestamp": time.time()
+            }
+            asyncio.create_task(ws_manager.broadcast(hotspots_payload))
 
         return {
             "status": "PROCESSED",
@@ -153,7 +156,7 @@ class StreamOrchestrator:
 
     async def process_batch(self, tx_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Process a batch of incoming transactions concurrently.
+        Process a batch of incoming transactions.
         """
         results = []
         for tx in tx_list:
@@ -201,13 +204,36 @@ class StreamOrchestrator:
             "timestamp": now
         }
 
-    async def dispatch_patrol(self, h3_cell: str, unit_id: Optional[str] = None, priority: str = "HIGH", notes: str = "") -> Dict[str, Any]:
+    async def dispatch_patrol(
+        self,
+        h3_cell: str,
+        unit_id: Optional[str] = None,
+        priority: str = "HIGH",
+        notes: str = "",
+        destination_lat: Optional[float] = None,
+        destination_lon: Optional[float] = None
+    ) -> Dict[str, Any]:
         """
-        Dispatch a PCR / Cyber Patrol Unit to an active H3 cash-out hotspot.
+        Dispatch a PCR / Cyber Patrol Unit to an active H3 cash-out hotspot with Google Maps CAD route.
         """
         call_id = f"PCR-DISPATCH-{int(time.time() * 1000)}"
         assigned_unit = unit_id or f"PCR-UNIT-{(hash(h3_cell) % 90 + 10)}"
         now = time.time()
+
+        # Resolve destination coordinates from payload or active hotspots
+        target_lat = destination_lat
+        target_lon = destination_lon
+        if target_lat is None or target_lon is None:
+            for hs in self.active_hotspots:
+                if hs.get("h3_cell") == h3_cell:
+                    target_lat = hs.get("lat")
+                    target_lon = hs.get("lon")
+                    break
+        if target_lat is None or target_lon is None:
+            target_lat = 28.6304
+            target_lon = 77.2773
+
+        maps_url = f"https://www.google.com/maps/dir/?api=1&destination={target_lat:.6f},{target_lon:.6f}"
 
         record = {
             "status": "DISPATCHED",
@@ -215,6 +241,8 @@ class StreamOrchestrator:
             "cad_call_id": call_id,
             "patrol_unit_id": assigned_unit,
             "priority": priority,
+            "destination": {"lat": round(target_lat, 6), "lon": round(target_lon, 6)},
+            "google_maps_url": maps_url,
             "notes": notes,
             "message": f"Tactical intercept dispatched to H3 Hex {h3_cell} for Unit {assigned_unit}.",
             "timestamp": now
@@ -222,7 +250,7 @@ class StreamOrchestrator:
 
         self.dispatched_patrols.append(record)
 
-        # Broadcast dispatch event
+        # Broadcast dispatch event to dashboard
         asyncio.create_task(ws_manager.broadcast({
             "type": "PATROL_DISPATCHED",
             "dispatch": record,
@@ -231,27 +259,47 @@ class StreamOrchestrator:
 
         return record
 
-    async def freeze_lien(self, account_no: str, system: str = "CFCFRMS-1930", reason: str = "", amount: Optional[float] = None) -> Dict[str, Any]:
+    async def freeze_lien(
+        self,
+        account_no: Optional[str] = None,
+        account_numbers: Optional[List[str]] = None,
+        system: str = "CFCFRMS-1930",
+        reason: str = "",
+        amount: Optional[float] = None
+    ) -> Dict[str, Any]:
         """
-        Trigger an automated 1930 CFCFRMS debit freeze / lien on a suspect mule account.
+        Trigger an automated 1930 CFCFRMS debit freeze / lien on suspect mule accounts (single or batch).
         """
         lien_id = f"LIEN-1930-{int(time.time() * 1000)}"
         now = time.time()
 
+        # Build list of affected accounts
+        accounts_list = []
+        if account_numbers:
+            accounts_list.extend(account_numbers)
+        if account_no and account_no not in accounts_list:
+            accounts_list.insert(0, account_no)
+        if not accounts_list:
+            accounts_list = ["UNKNOWN_ACCOUNT"]
+
+        primary_account = accounts_list[0]
+
         record = {
             "status": "LIEN_PLACED",
-            "account_number": account_no,
+            "account_number": primary_account,
+            "accounts_affected": accounts_list,
             "system": system,
             "lien_id": lien_id,
             "freeze_amount": amount,
+            "atm_daily_limit": "₹0.00",
             "reason": reason or "Automated ML Mule Risk Threshold Exceeded (>0.70)",
-            "message": f"Debit & ATM withdrawal permissions locked for account {account_no}.",
+            "message": f"Debit & ATM withdrawal permissions locked for {len(accounts_list)} accounts ({', '.join(accounts_list)}).",
             "timestamp": now
         }
 
         self.placed_liens.append(record)
 
-        # Broadcast freeze event
+        # Broadcast freeze event to dashboard
         asyncio.create_task(ws_manager.broadcast({
             "type": "LIEN_PLACED",
             "lien": record,
@@ -267,7 +315,7 @@ class StreamOrchestrator:
         return {
             "type": "INITIAL_STATE",
             "hotspots": self.active_hotspots,
-            "recent_txs": self.recent_transactions[-20:],
+            "recent_txs": self.recent_transactions[-50:],
             "system_metrics": self.get_system_metrics()
         }
 

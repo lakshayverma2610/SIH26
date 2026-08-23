@@ -30,7 +30,9 @@ async def dispatch_patrol(payload: PatrolDispatchPayload):
             h3_cell=payload.h3_cell,
             unit_id=payload.patrol_unit_id,
             priority=payload.priority or "HIGH",
-            notes=payload.notes or ""
+            notes=payload.notes or "",
+            destination_lat=payload.destination_lat,
+            destination_lon=payload.destination_lon
         )
         return record
     except Exception as e:
@@ -52,6 +54,7 @@ async def freeze_lien(payload: FreezeLienPayload):
     try:
         record = await orchestrator.freeze_lien(
             account_no=payload.account_number,
+            account_numbers=payload.account_numbers,
             system=payload.system or "CFCFRMS-1930",
             reason=payload.reason or "",
             amount=payload.freeze_amount
