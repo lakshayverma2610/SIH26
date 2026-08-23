@@ -6,9 +6,11 @@ evaluates ML mule risk, updates geospatial cash-out hotspots, and broadcasts ale
 import sys
 import time
 import json
+import uuid
 import asyncio
 import logging
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 from backend.app.config import (
@@ -307,6 +309,207 @@ class StreamOrchestrator:
         }))
 
         return record
+
+    def generate_incident_report(
+        self,
+        hotspot_id: Optional[str] = None,
+        complaint_id: Optional[str] = None,
+        format_type: str = "MARKDOWN",
+        include_map_coordinates: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Compile active in-memory complaints, suspect transactions, geospatial clusters,
+        and executed CAD patrol/lien actions into a structured Markdown incident action report.
+        """
+        now = datetime.now(timezone.utc)
+        report_id = f"IAR-{now.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        # 1. Resolve Complaint Data
+        complaint = None
+        complaint_match_type = "EXACT_MATCH"
+        if complaint_id:
+            for rec in self.ncrp_complaints.values():
+                if rec.get("ncrp_id") == complaint_id:
+                    complaint = rec
+                    break
+        if not complaint and self.ncrp_complaints:
+            complaint = list(self.ncrp_complaints.values())[-1]
+            complaint_match_type = "LATEST_ACTIVE_BUFFER"
+
+        # 2. Resolve Hotspot Data
+        hotspot = None
+        hotspot_match_type = "EXACT_MATCH"
+        if hotspot_id:
+            for hs in self.active_hotspots:
+                if hs.get("h3_cell") == hotspot_id:
+                    hotspot = hs
+                    break
+        if not hotspot and self.active_hotspots:
+            hotspot = self.active_hotspots[0]
+            hotspot_match_type = "PRIMARY_ACTIVE_BUFFER"
+
+        # 3. Correlate Relevant Transactions
+        suspect_acc = complaint.get("suspect_acc") if complaint else None
+        related_txs = []
+        if suspect_acc:
+            related_txs = [
+                tx for tx in self.recent_transactions
+                if tx.get("src_acc") == suspect_acc or tx.get("dest_acc") == suspect_acc
+            ]
+        if not related_txs:
+            related_txs = [tx for tx in self.recent_transactions if tx.get("is_high_risk")][-5:]
+        if not related_txs:
+            related_txs = self.recent_transactions[-5:]
+
+        # 4. Correlate Actions
+        dispatches = list(self.dispatched_patrols)
+        liens = list(self.placed_liens)
+
+        # 5. Build Markdown Content
+        title = f"Incident Action Report - {complaint.get('ncrp_id') if complaint else (hotspot.get('h3_cell') if hotspot else report_id)}"
+        
+        md_lines = [
+            "# 🚨 CYBER CRIME INCIDENT ACTION REPORT (IAR)",
+            f"**Report Reference:** `{report_id}`  ",
+            f"**Generated At:** {now_str}  ",
+            f"**System Source:** Geo-CashWatch Backend Stream Orchestrator  ",
+            f"**Operational Scope:** Law Enforcement & 1930 CFCFRMS Incident Response  ",
+            "",
+            "---",
+            "",
+            "## 1. Incident Overview",
+        ]
+
+        if complaint:
+            md_lines.extend([
+                f"- **1930 NCRP Reference:** `{complaint.get('ncrp_id')}` ({complaint_match_type})",
+                f"- **Victim Account:** `{complaint.get('victim_acc', 'N/A')}`",
+                f"- **Tagged Layer-1 Suspect Account:** `{complaint.get('suspect_acc', 'N/A')}`",
+                f"- **Reported Defrauded Amount:** ₹{complaint.get('amount', 0.0):,.2f}",
+                f"- **Modus Operandi:** {complaint.get('complaint_type', 'CYBER_FRAUD')}",
+                f"- **Incident Narrative:** {complaint.get('description', 'N/A')}",
+            ])
+        else:
+            md_lines.append("- **NCRP Complaint Status:** No matching NCRP complaint registered in current memory buffer.")
+
+        md_lines.extend([
+            "",
+            "---",
+            "",
+            "## 2. In-Flight Transaction & AI Mule Evaluation",
+        ])
+
+        if related_txs:
+            md_lines.append("| Tx ID | Source | Destination | Amount (INR) | Risk Score | High Risk | Reasons |")
+            md_lines.append("|---|---|---|---|---|---|---|")
+            for tx in related_txs:
+                reasons_str = "; ".join(tx.get("reasons", [])) or "Normal"
+                md_lines.append(
+                    f"| `{tx.get('tx_id')}` | `{tx.get('src_acc')}` | `{tx.get('dest_acc')}` | "
+                    f"₹{tx.get('amount', 0.0):,.2f} | {tx.get('fraud_probability', 0.0):.2f} | "
+                    f"{'⚠️ YES' if tx.get('is_high_risk') else 'NO'} | {reasons_str} |"
+                )
+        else:
+            md_lines.append("- *No transaction flow recorded in in-memory sliding window.*")
+
+        md_lines.extend([
+            "",
+            "---",
+            "",
+            "## 3. Geospatial Threat & ATM Cash-Out Prediction",
+        ])
+
+        if hotspot:
+            win = hotspot.get("predicted_cashout_window") or {}
+            win_str = f"{win.get('start_time', 'N/A')} - {win.get('end_time', 'N/A')} (ETA {win.get('eta_minutes', 25)}m)" if win else "ETA ~25 mins"
+            coords_str = f"{hotspot.get('lat')}, {hotspot.get('lon')}" if include_map_coordinates else "Coordinates suppressed"
+            
+            md_lines.extend([
+                f"- **Target H3 Cell:** `{hotspot.get('h3_cell')}` ({hotspot_match_type})",
+                f"- **Cluster Center:** {coords_str}",
+                f"- **Aggregated Risk Score:** {hotspot.get('risk_score', 0.0):.2f}",
+                f"- **Total Funds at Risk:** ₹{hotspot.get('total_amount', 0.0):,.2f}",
+                f"- **Predicted Cash-Out Window:** {win_str}",
+                f"- **Unique Suspect Accounts in Cluster:** {hotspot.get('unique_mule_accounts', 1)}",
+                "",
+                "### Targeted Physical ATM / AePS Terminals:",
+            ])
+            nearby_atms = hotspot.get("nearby_atms", [])
+            if nearby_atms:
+                for idx, atm in enumerate(nearby_atms, 1):
+                    loc = f" (Lat: {atm.get('lat')}, Lon: {atm.get('lon')})" if include_map_coordinates and atm.get('lat') else ""
+                    md_lines.append(
+                        f"{idx}. **{atm.get('bank', 'Bank')}** (`{atm.get('atm_id', 'ATM')}`) — "
+                        f"Distance: {atm.get('distance_km', 0.0)} km{loc} | Limit: ₹{atm.get('daily_limit', 50000.0):,.2f}"
+                    )
+            else:
+                md_lines.append("- *No specific ATM points associated with this cluster.*")
+        else:
+            md_lines.append("- **Hotspot Status:** No active spatial cash-out hotspots aggregated in memory.")
+
+        md_lines.extend([
+            "",
+            "---",
+            "",
+            "## 4. Tactical Interception & Enforcement Log",
+        ])
+
+        if dispatches:
+            md_lines.append("### Computer-Aided Dispatches (CAD):")
+            for d in dispatches:
+                maps_info = f" [CAD Navigation Route]({d.get('google_maps_url')})" if d.get("google_maps_url") else ""
+                md_lines.append(
+                    f"- **{d.get('cad_call_id')}** -> Unit `{d.get('patrol_unit_id')}` | "
+                    f"Priority: `{d.get('priority')}` | Target: `{d.get('h3_cell')}`{maps_info}"
+                )
+        else:
+            md_lines.append("- *No PCR patrol dispatches triggered.*")
+
+        if liens:
+            md_lines.append("\n### 1930 / NPCI Banking Liens Placed:")
+            for l in liens:
+                accs = ", ".join(l.get("accounts_affected", [l.get("account_number", "N/A")]))
+                md_lines.append(
+                    f"- **{l.get('lien_id')}** -> Accounts: `{accs}` | "
+                    f"ATM Daily Limit: `{l.get('atm_daily_limit', '₹0.00')}` | Reason: {l.get('reason')}"
+                )
+        else:
+            md_lines.append("- *No emergency debit/ATM liens recorded in active session.*")
+
+        md_lines.extend([
+            "",
+            "---",
+            "",
+            "## 5. System Metadata & Statutory References",
+            "- **Processing Gateway:** FastAPI Async Stream Orchestrator",
+            "- **Statutory References:** Reference metadata for emergency requests under Section 91 CrPC and digital log trail under Section 65B Indian Evidence Act.",
+            "- **Notice:** Generated automatically from real-time operational memory buffers for investigative assistance."
+        ])
+
+        content = "\n".join(md_lines)
+
+        summary_stats = {
+            "report_id": report_id,
+            "complaint_id": complaint.get("ncrp_id") if complaint else None,
+            "hotspot_cell": hotspot.get("h3_cell") if hotspot else None,
+            "total_stolen_amount": complaint.get("amount", 0.0) if complaint else 0.0,
+            "total_funds_at_risk": hotspot.get("total_amount", 0.0) if hotspot else 0.0,
+            "related_txs_count": len(related_txs),
+            "dispatches_count": len(dispatches),
+            "liens_count": len(liens),
+            "atms_targeted_count": len(hotspot.get("nearby_atms", [])) if hotspot else 0
+        }
+
+        return {
+            "status": "GENERATED",
+            "report_id": report_id,
+            "format": format_type.upper(),
+            "title": title,
+            "content": content,
+            "summary_stats": summary_stats,
+            "timestamp": time.time()
+        }
 
     def get_initial_state(self) -> Dict[str, Any]:
         """

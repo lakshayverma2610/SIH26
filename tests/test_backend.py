@@ -182,6 +182,24 @@ def test_freeze_batch_liens_action():
     assert len(data["accounts_affected"]) == 3
     assert "ACC_MULE_L2_01" in data["accounts_affected"]
 
+def test_generate_incident_report_endpoint():
+    payload = {
+        "complaint_id": "NCRP-2026-TEST-999",
+        "hotspot_id": "8860145b59fffff",
+        "format": "MARKDOWN",
+        "include_map_coordinates": True
+    }
+    response = client.post("/api/v1/actions/generate-report", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "GENERATED"
+    assert "IAR-" in data["report_id"]
+    assert data["format"] == "MARKDOWN"
+    assert "CYBER CRIME INCIDENT ACTION REPORT" in data["content"]
+    assert "NCRP-2026-TEST-999" in data["content"]
+    assert "summary_stats" in data
+    assert data["summary_stats"]["complaint_id"] == "NCRP-2026-TEST-999"
+
 def test_action_history():
     response = client.get("/api/v1/actions/history")
     assert response.status_code == 200

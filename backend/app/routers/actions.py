@@ -8,7 +8,9 @@ from backend.app.schemas.action import (
     PatrolDispatchPayload,
     PatrolDispatchResponse,
     FreezeLienPayload,
-    FreezeLienResponse
+    FreezeLienResponse,
+    IncidentReportPayload,
+    IncidentReportResponse
 )
 from backend.app.core.stream_orchestrator import orchestrator
 
@@ -64,6 +66,31 @@ async def freeze_lien(payload: FreezeLienPayload):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Lien placement failed: {str(e)}"
+        )
+
+@router.post(
+    "/generate-report",
+    response_model=IncidentReportResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Generate Incident Action Report (Evidence Summary)"
+)
+def generate_incident_report(payload: IncidentReportPayload):
+    """
+    Compiles active victim complaints, suspect transactions, geospatial ATM clusters,
+    and executed CAD patrols/banking liens into a structured incident report.
+    """
+    try:
+        report = orchestrator.generate_incident_report(
+            hotspot_id=payload.hotspot_id,
+            complaint_id=payload.complaint_id,
+            format_type=payload.format,
+            include_map_coordinates=payload.include_map_coordinates
+        )
+        return report
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Report generation failed: {str(e)}"
         )
 
 @router.get(
