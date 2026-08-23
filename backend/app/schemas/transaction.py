@@ -54,4 +54,4 @@ class ProcessedTransactionResponse(BaseModel):
     fraud_score: float
     is_high_risk: bool
     reasons: List[str]
-    features: Optional[Dict[str, float]] = None
+    features: Optional[Dict[str, Any]] = None

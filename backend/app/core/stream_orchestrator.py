@@ -26,14 +26,16 @@ from backend.app.core.fallback_geo import get_geospatial_predictor
 # Import AI Engine Singletons
 from ai_engine.features.sliding_window import SlidingWindowFeatureEngine
 from ai_engine.models.mule_scorer import MuleScorer
+from ai_engine.geo.h3_mapper import SpatioTemporalPredictor
 
 logger = logging.getLogger("geo_cashwatch.orchestrator")
 
 class StreamOrchestrator:
     def __init__(self):
-        # 1. Initialize AI Feature Engine & Mule Scorer Singletons
+        # 1. Initialize AI Feature Engine, Mule Scorer & SpatioTemporal Predictor Singletons
         self.feature_engine = SlidingWindowFeatureEngine()
         self.mule_scorer = MuleScorer()
+        self.spatiotemporal = SpatioTemporalPredictor()
 
         # 2. Initialize Geospatial Predictor
         self.geo_predictor = get_geospatial_predictor(str(ATMS_DATA_PATH) if ATMS_DATA_PATH.exists() else None)
@@ -147,13 +149,15 @@ class StreamOrchestrator:
             }
             asyncio.create_task(ws_manager.broadcast(hotspots_payload))
 
+        feats_dict = feats.model_dump() if hasattr(feats, "model_dump") else (feats.dict() if hasattr(feats, "dict") else dict(feats))
+
         return {
             "status": "PROCESSED",
             "tx_id": tx_id,
             "fraud_score": round(fraud_prob, 4),
             "is_high_risk": is_high_risk,
             "reasons": reasons,
-            "features": feats
+            "features": feats_dict
         }
 
     async def process_batch(self, tx_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
