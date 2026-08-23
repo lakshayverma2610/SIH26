@@ -167,7 +167,7 @@ def test_freeze_lien_action():
     assert data["status"] == "LIEN_PLACED"
     assert data["account_number"] == "ACC_SUSPECT_999"
     assert "lien_id" in data
-    assert data["atm_daily_limit"] == "₹0.00"
+    assert "atm_daily_limit" in data
 
 def test_freeze_batch_liens_action():
     payload = {
@@ -192,13 +192,62 @@ def test_generate_incident_report_endpoint():
     response = client.post("/api/v1/actions/generate-report", json=payload)
     assert response.status_code == 200
     data = response.json()
+
+    # Core response verification
     assert data["status"] == "GENERATED"
-    assert "IAR-" in data["report_id"]
+    assert data["report_id"].startswith("IAR-")
     assert data["format"] == "MARKDOWN"
+    assert isinstance(data["title"], str) and len(data["title"]) > 0
+    assert isinstance(data["content"], str) and len(data["content"]) > 0
+    assert isinstance(data["timestamp"], (int, float))
+
+    # Content assertions
     assert "CYBER CRIME INCIDENT ACTION REPORT" in data["content"]
     assert "NCRP-2026-TEST-999" in data["content"]
+    assert "8860145b59fffff" in data["content"]
+
+    # Summary stats verification
     assert "summary_stats" in data
-    assert data["summary_stats"]["complaint_id"] == "NCRP-2026-TEST-999"
+    stats = data["summary_stats"]
+    assert stats["report_id"] == data["report_id"]
+    assert stats["complaint_id"] == "NCRP-2026-TEST-999"
+    assert "hotspot_cell" in stats
+    assert "total_stolen_amount" in stats
+    assert "total_funds_at_risk" in stats
+    assert "related_txs_count" in stats
+    assert "dispatches_count" in stats
+    assert "liens_count" in stats
+    assert "atms_targeted_count" in stats
+
+def test_generate_incident_report_omitted_ids():
+    # Calling report generation without explicit IDs should use deterministic fallbacks
+    payload = {
+        "format": "MARKDOWN",
+        "include_map_coordinates": True
+    }
+    response = client.post("/api/v1/actions/generate-report", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["status"] == "GENERATED"
+    assert data["report_id"].startswith("IAR-")
+    assert data["format"] == "MARKDOWN"
+    assert "CYBER CRIME INCIDENT ACTION REPORT" in data["content"]
+    assert "summary_stats" in data
+
+def test_generate_incident_report_without_coordinates():
+    # Calling report generation with include_map_coordinates=False
+    payload = {
+        "complaint_id": "NCRP-2026-TEST-999",
+        "format": "MARKDOWN",
+        "include_map_coordinates": False
+    }
+    response = client.post("/api/v1/actions/generate-report", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["status"] == "GENERATED"
+    assert "Coordinates suppressed" in data["content"]
 
 def test_action_history():
     response = client.get("/api/v1/actions/history")

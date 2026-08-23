@@ -34,7 +34,7 @@ class FreezeLienResponse(BaseModel):
     status: str = "LIEN_PLACED"
     account_number: Optional[str] = Field(default=None, description="Primary frozen account")
     accounts_affected: Optional[List[str]] = Field(default_factory=list, description="List of all accounts frozen in batch")
-    atm_daily_limit: Optional[str] = Field(default="₹0.00", description="Reduced ATM daily limit")
+    atm_daily_limit: Optional[str] = Field(default="INR 0.00", description="Reduced ATM daily limit")
     system: str
     lien_id: str
     message: str
