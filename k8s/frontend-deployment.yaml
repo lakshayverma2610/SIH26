@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: geo-cashwatch-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: geo-cashwatch-frontend
+  template:
+    metadata:
+      labels:
+        app: geo-cashwatch-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: geo-cashwatch-frontend:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: geo-cashwatch-frontend
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: geo-cashwatch-frontend

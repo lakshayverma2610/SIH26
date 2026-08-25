@@ -14,6 +14,10 @@ export function useAlertStream() {
   const [latestAction, setLatestAction] = useState(null)
   const [status, setStatus] = useState('CONNECTING')
   const retry = useRef(0)
+  
+  // Buffers for high-throughput batching to prevent React freeze
+  const txBuffer = useRef([])
+  const hotspotBuffer = useRef(null)
 
   const consume = useCallback((payload) => {
     if (!payload || typeof payload !== 'object') return
@@ -23,9 +27,11 @@ export function useAlertStream() {
       setMetrics(payload.system_metrics || {})
     }
     if (payload.transaction && ['NEW_TRANSACTION', 'NEW_ALERT'].includes(payload.type)) {
-      setTransactions((items) => [normalizeTransaction({ ...payload.transaction, timestamp: payload.transaction.timestamp || payload.timestamp }), ...items].slice(0, 100))
+      txBuffer.current.push(normalizeTransaction({ ...payload.transaction, timestamp: payload.transaction.timestamp || payload.timestamp }))
     }
-    if (payload.hotspots && ['NEW_ALERT', 'HOTSPOTS_UPDATED'].includes(payload.type)) setHotspots(payload.hotspots.map(normalizeHotspot))
+    if (payload.hotspots && ['NEW_ALERT', 'HOTSPOTS_UPDATED'].includes(payload.type)) {
+      hotspotBuffer.current = payload.hotspots.map(normalizeHotspot)
+    }
     if (['COMPLAINT_REGISTERED', 'PATROL_DISPATCHED', 'LIEN_PLACED'].includes(payload.type)) setLatestAction(payload)
   }, [])
 
@@ -33,6 +39,20 @@ export function useAlertStream() {
     let socket
     let timer
     let stopped = false
+    
+    // Batch flush interval for extremely high TPS
+    const flushTimer = setInterval(() => {
+      if (txBuffer.current.length > 0) {
+        const batch = txBuffer.current
+        txBuffer.current = []
+        setTransactions((items) => [...batch.reverse(), ...items].slice(0, 100))
+      }
+      if (hotspotBuffer.current !== null) {
+        setHotspots(hotspotBuffer.current)
+        hotspotBuffer.current = null
+      }
+    }, 100) // 10 FPS batching is butter smooth
+    
     const connect = () => {
       setStatus('CONNECTING')
       socket = new WebSocket(wsUrl)
@@ -56,7 +76,7 @@ export function useAlertStream() {
     refreshRestState()
     const refreshTimer = setInterval(refreshRestState, 15000)
     connect()
-    return () => { stopped = true; clearTimeout(timer); clearInterval(refreshTimer); socket?.close() }
+    return () => { stopped = true; clearTimeout(timer); clearInterval(refreshTimer); clearInterval(flushTimer); socket?.close() }
   }, [consume])
 
   return { transactions, hotspots, metrics, actionHistory, status, latestAction }

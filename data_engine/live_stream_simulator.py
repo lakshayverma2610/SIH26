@@ -1,6 +1,6 @@
 """
 Real-Time Transaction Stream Simulator & Attack Injection Driver
-Targets FastAPI Backend at http://localhost:8000/api/v1/transactions/stream
+Pushing directly to Kafka (Producer)
 """
 import sys
 import time
@@ -8,13 +8,49 @@ import json
 import random
 import requests
 import argparse
+import os
+import threading
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
+KAFKA_ENABLED = os.getenv("KAFKA_ENABLED", "false").lower() == "true"
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+RAW_TX_TOPIC = "raw-transactions"
+producer = None
+
+if KAFKA_ENABLED:
+    try:
+        from kafka import KafkaProducer
+        producer = KafkaProducer(
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            value_serializer=lambda v: json.dumps(v).encode('utf-8')
+        )
+        print(f"✅ Kafka Producer Connected: {KAFKA_BOOTSTRAP_SERVERS}")
+    except ImportError:
+        print("⚠️ 'kafka-python' not installed. Running in REST API mode. (pip install kafka-python)")
+        KAFKA_ENABLED = False
+
 API_URL = "http://localhost:8000/api/v1/transactions/stream"
 COMPLAINT_API_URL = "http://localhost:8000/api/v1/complaints/ncrp"
+
+# Global variables for multithreaded continuous streaming
+STREAMING_ACTIVE = False
+CURRENT_TPS = 5
+tx_counter = 1
+
+def generate_random_location():
+    # 90% chance of being inside India, 10% chance of International
+    if random.random() < 0.90:
+        # Approximate bounding box for India
+        lat = random.uniform(8.0, 37.0)
+        lon = random.uniform(68.0, 97.0)
+    else:
+        # Global bounds (excluding poles)
+        lat = random.uniform(-60.0, 70.0)
+        lon = random.uniform(-180.0, 180.0)
+    return lat, lon
 
 def load_simulation_data():
     data_dir = Path(__file__).resolve().parent / "data"
@@ -34,82 +70,116 @@ def load_simulation_data():
 
     return accounts, chains
 
-def send_transaction(tx_payload):
+def send_transaction(tx_payload, silent=False):
+    if KAFKA_ENABLED and producer:
+        try:
+            producer.send(RAW_TX_TOPIC, tx_payload)
+            # We don't flush on every single tx during high-volume background stream to maximize throughput
+            if not silent:
+                producer.flush()
+                print(f"[KAFKA PUBLISH] TX {tx_payload['tx_id']}: {tx_payload['src_acc']} -> {tx_payload['dest_acc']} | Amount: INR {tx_payload['amount']}")
+        except Exception as e:
+            if not silent: print(f"[KAFKA ERR] {e}")
+        return
+
     try:
         res = requests.post(API_URL, json=tx_payload, timeout=2.0)
-        if res.status_code == 200:
-            data = res.json()
-            score = data.get("fraud_score", 0.0)
-            high_risk = data.get("is_high_risk", False)
-            tag = "[CRITICAL ALERT]" if high_risk else "[NORMAL]"
-            print(f"{tag} TX {tx_payload['tx_id']}: {tx_payload['src_acc']} -> {tx_payload['dest_acc']} | Amount: INR {tx_payload['amount']} | Score: {score}")
-        else:
-            print(f"[ERR] Status {res.status_code}: {res.text}")
+        if not silent:
+            if res.status_code == 200:
+                data = res.json()
+                score = data.get("fraud_score", 0.0)
+                high_risk = data.get("is_high_risk", False)
+                tag = "[CRITICAL ALERT]" if high_risk else "[NORMAL]"
+                print(f"{tag} TX {tx_payload['tx_id']}: {tx_payload['src_acc']} -> {tx_payload['dest_acc']} | Amount: INR {tx_payload['amount']} | Score: {score}")
+            else:
+                print(f"[ERR] Status {res.status_code}: {res.text}")
     except Exception as e:
-        print(f"[ERR] API Connection Failed: {e}")
+        if not silent: print(f"[ERR] API Connection Failed: {e}")
 
-def run_continuous_background_stream(accounts, rate_per_sec=5):
-    print(f"\n--- Starting Background Baseline Stream ({rate_per_sec} tx/sec) ---")
-    tx_counter = 1
+def continuous_background_worker(accounts, chains):
+    """Runs on a separate thread, endlessly pumping normal transactions and rare unique attacks."""
+    global tx_counter, STREAMING_ACTIVE, CURRENT_TPS
+    
     normal_accounts = [a for a in accounts if a.get("role") == "BASELINE_NORMAL"]
     if not normal_accounts:
         normal_accounts = accounts
 
-    try:
-        while True:
-            src = random.choice(normal_accounts)
-            dest = random.choice(normal_accounts)
-            while dest["account_number"] == src["account_number"]:
-                dest = random.choice(normal_accounts)
+    while True:
+        if STREAMING_ACTIVE and CURRENT_TPS > 0:
+            # Generate random 12-digit account numbers to prevent artificial velocity/smurfing flags
+            # on the backend sliding window engine, making high-TPS completely realistic baseline noise.
+            src_acc = f"{random.randint(100000000000, 999999999999)}"
+            dest_acc = f"{random.randint(100000000000, 999999999999)}"
 
             amount = round(random.uniform(200.0, 15000.0), 2)
             tx_id = f"TX_NORM_{int(time.time())}_{tx_counter:04d}"
+            
+            rand_lat, rand_lon = generate_random_location()
 
             payload = {
                 "tx_id": tx_id,
-                "src_acc": src["account_number"],
-                "dest_acc": dest["account_number"],
+                "src_acc": src_acc,
+                "dest_acc": dest_acc,
                 "amount": amount,
                 "channel": "UPI",
-                "device_id": src.get("device_id", "DEV_DEFAULT"),
-                "ip": src.get("ip_address", "49.36.10.10"),
-                "lat": 28.6304 + random.uniform(-0.02, 0.02),
-                "lon": 77.2773 + random.uniform(-0.02, 0.02),
+                "device_id": f"DEV_{random.randint(1000, 9999)}",
+                "ip": f"49.36.{random.randint(1, 255)}.{random.randint(1, 255)}",
+                "lat": rand_lat,
+                "lon": rand_lon,
                 "timestamp": time.time()
             }
 
-            send_transaction(payload)
+            # Silent=True to not spam the terminal menu, just pump to Kafka
+            send_transaction(payload, silent=True)
             tx_counter += 1
-            time.sleep(1.0 / rate_per_sec)
-    except KeyboardInterrupt:
-        print("\nBackground stream paused.")
+            
+            # Periodically flush if using Kafka to clear the buffer
+            if KAFKA_ENABLED and producer and tx_counter % 50 == 0:
+                producer.flush()
+                
+            # Randomly inject a completely unique, fresh cybercrime attack into the background stream
+            # Probability scaled inversely with TPS so we don't spam thousands of attacks
+            prob = min(0.01 / CURRENT_TPS, 0.005)
+            if chains and random.random() < prob:
+                threading.Thread(target=trigger_attack_scenario, args=(random.choice(chains), True), daemon=True).start()
+                
+            time.sleep(1.0 / CURRENT_TPS)
+        else:
+            time.sleep(0.5)
 
-def trigger_attack_scenario(chain):
-    print(f"\n=======================================================")
-    print(f"🚨 TRIGGERING NCRP SCENARIO: {chain['ncrp_complaint_id']}")
-    print(f"   Category: {chain['crime_category']} | Stolen Amount: INR {chain['total_stolen_amount']}")
-    print(f"=======================================================")
-
+def trigger_attack_scenario(chain, silent=False):
     now = time.time()
-    victim = chain["victim_account"]
-    l1 = chain["layer_1_mule"]
-    l2_nodes = chain["layer_2_smurfing"]
-    terminal = chain["layer_3_terminal"]
+    
+    # ALWAYS generate completely fresh, random, unique mule accounts for every attack
+    # This ensures the AI model is tested on unseen accounts every single time
+    victim = f"{random.randint(100000000000, 999999999999)}"
+    l1 = f"{random.randint(100000000000, 999999999999)}"
+    l2_count = len(chain.get("layer_2_smurfing", [1,2,3]))
+    l2_nodes = [f"{random.randint(100000000000, 999999999999)}" for _ in range(l2_count)]
+    
+    atk_lat, atk_lon = generate_random_location()
+    terminal_name = chain.get("layer_3_terminal", {}).get("bank_name", "Random Branch")
     osint = chain.get("osint_metadata", {})
+    
+    if not silent:
+        print(f"\n=======================================================")
+        print(f"🚨 INJECTING UNIQUE RANDOM ATTACK INTO STREAM")
+        print(f"   Category: {chain['crime_category']} | Stolen Amount: INR {chain['total_stolen_amount']}")
+        print(f"   Fresh Mule L1 Account Generated: {l1}")
+        print(f"=======================================================")
 
     # Step 1: Ingest 1930 NCRP Complaint
     try:
         complaint_payload = {
-            "ncrp_id": chain["ncrp_complaint_id"],
+            "ncrp_id": f"NCRP_{int(now)}",
             "victim_acc": victim,
             "suspect_acc": l1,
             "amount": chain["total_stolen_amount"],
             "complaint_type": chain["crime_category"]
         }
-        res = requests.post(COMPLAINT_API_URL, json=complaint_payload, timeout=2.0)
-        print(f"[NCRP 1930 INGESTION] Res: {res.json()}")
-    except Exception as e:
-        print(f"[NCRP 1930 INGESTION ERR] {e}")
+        requests.post(COMPLAINT_API_URL, json=complaint_payload, timeout=2.0)
+    except:
+        pass
 
     # Step 2: Layer 0 -> Layer 1 (Spike into Dormant Receiver)
     tx1_id = f"TX_ATK_L1_{int(now)}"
@@ -121,17 +191,17 @@ def trigger_attack_scenario(chain):
         "channel": "IMPS",
         "device_id": f"DEV_RAT_{victim}",
         "ip": osint.get("c2_ip", "185.220.101.4"),
-        "lat": terminal.get("lat", 28.6304),
-        "lon": terminal.get("lon", 77.2773),
+        "lat": atk_lat,
+        "lon": atk_lon,
         "timestamp": now
     }
-    print("\n--> Step A: Victim -> L1 Receiver Mule (High-Value Spiking)")
-    send_transaction(payload1)
+    if not silent: print("\n--> Step A: Victim -> L1 Receiver Mule (High-Value Spiking)")
+    send_transaction(payload1, silent=silent)
     time.sleep(0.5)
 
-    # Step 3: Layer 1 -> Layer 2 Smurfing Splits (Rapid Fan-Out within 180s)
+    # Step 3: Layer 1 -> Layer 2 Smurfing Splits (Rapid Fan-Out)
     split_amount = round(chain["total_stolen_amount"] / len(l2_nodes), 2)
-    print(f"\n--> Step B: L1 -> L2 Smurfing Nodes ({len(l2_nodes)} Rapid Split Transfers)")
+    if not silent: print(f"\n--> Step B: L1 -> L2 Smurfing Nodes ({len(l2_nodes)} Rapid Split Transfers to Unique Accounts)")
 
     for idx, l2 in enumerate(l2_nodes, 1):
         tx2_id = f"TX_ATK_L2_{int(now)}_{idx}"
@@ -143,99 +213,86 @@ def trigger_attack_scenario(chain):
             "channel": "UPI",
             "device_id": "DEV_SMURF_HUB_99",
             "ip": "157.33.190.12",
-            "lat": terminal.get("lat", 28.6304) + (idx * 0.0005),
-            "lon": terminal.get("lon", 77.2773) + (idx * 0.0005),
+            "lat": atk_lat + (idx * 0.0005),
+            "lon": atk_lon + (idx * 0.0005),
             "timestamp": now + (idx * 2)
         }
-        send_transaction(payload2)
-        time.sleep(0.2)
+        send_transaction(payload2, silent=silent)
+        time.sleep(0.1)
+        
+    if KAFKA_ENABLED and producer:
+        producer.flush()
 
-    print(f"\n🎯 Target Physical Cash Withdrawal Hotspot: {terminal.get('bank_name')} ({terminal.get('h3_res9')})")
-    print("=======================================================\n")
+    if not silent:
+        print(f"\n🎯 Attack Injected! Model should detect physical target at: {terminal_name}")
+        print("=======================================================\n")
 
-BATCH_API_URL = "http://localhost:8000/api/v1/transactions/batch"
-
-def send_batch_transactions(accounts, batch_size=50):
-    print(f"\n🚀 Sending High-Speed Batch Burst ({batch_size} transactions) to FastAPI Treelite Engine...")
-    tx_list = []
-    now = time.time()
-    normal_accounts = [a for a in accounts if a.get("role") == "BASELINE_NORMAL"] or accounts
-
-    for i in range(batch_size):
-        src = random.choice(normal_accounts)
-        dest = random.choice(normal_accounts)
-        while dest["account_number"] == src["account_number"]:
-            dest = random.choice(normal_accounts)
-
-        tx_list.append({
-            "tx_id": f"TX_BATCH_{int(now)}_{i:03d}",
-            "src_acc": src["account_number"],
-            "dest_acc": dest["account_number"],
-            "amount": round(random.uniform(500.0, 45000.0), 2),
-            "channel": random.choice(["UPI", "IMPS", "NEFT"]),
-            "device_id": src.get("device_id", "DEV_DEFAULT"),
-            "ip": src.get("ip_address", "49.36.1.1"),
-            "lat": 28.6304 + random.uniform(-0.03, 0.03),
-            "lon": 77.2773 + random.uniform(-0.03, 0.03),
-            "timestamp": now + (i * 0.1)
-        })
-
-    try:
-        t0 = time.perf_counter()
-        res = requests.post(BATCH_API_URL, json={"transactions": tx_list}, timeout=5.0)
-        t1 = time.perf_counter()
-        if res.status_code == 200:
-            data = res.json()
-            print(f"[OK] Batch Ingested! Engine: {data.get('engine')} | Processed: {data.get('total_ingested')} tx | Server Latency: {data.get('latency_ms')} ms | Client Roundtrip: {(t1-t0)*1000:.2f} ms")
-        else:
-            print(f"[ERR] Batch failed: {res.status_code} - {res.text}")
-    except Exception as e:
-        print(f"[ERR] Batch connection failed: {e}")
-
-def interactive_cli_menu(accounts, chains):
+def attack_submenu(chains):
     while True:
-        print("\n=======================================================")
-        print("      AEGIS-Geo Cybercrime Stream Simulator (SIH 26184) ")
-        print("=======================================================")
-        print("  [1] Start Continuous Background Baseline Stream (5 tx/sec)")
-        print("  [2] Trigger Random Cybercrime Attack Scenario")
-        print("  [3] Trigger Jamtara APK RAT Fraud Scenario")
-        print("  [4] Trigger Mewat Sextortion / AePS Scenario")
-        print("  [5] Trigger High-Throughput Batch Burst (50 tx via Treelite)")
-        print("  [6] Exit Simulator")
-        print("=======================================================")
-        choice = input("Enter option (1-6): ").strip()
-
+        print("\n--- INJECT SPECIFIC ATTACK ---")
+        print("  [1] Jamtara APK RAT Fraud")
+        print("  [2] Mewat Sextortion/AePS Attack")
+        print("  [3] Back to Main Menu")
+        choice = input("Select attack: ").strip()
         if choice == "1":
-            run_continuous_background_stream(accounts, rate_per_sec=5)
-        elif choice == "2":
-            if chains:
-                trigger_attack_scenario(random.choice(chains))
-            else:
-                print("No chains found in data/mule_transaction_chains.json. Run generate_mule_chains.py first.")
-        elif choice == "3":
             apk_chains = [c for c in chains if c.get("crime_category") == "APK_RAT_FRAUD"]
             if apk_chains:
-                trigger_attack_scenario(apk_chains[0])
-            elif chains:
-                trigger_attack_scenario(chains[0])
-        elif choice == "4":
+                trigger_attack_scenario(random.choice(apk_chains))
+        elif choice == "2":
             mewat_chains = [c for c in chains if c.get("crime_category") in ["SEXTORTION_VISHING", "AEPS_BIOMETRIC_FRAUD"]]
             if mewat_chains:
-                trigger_attack_scenario(mewat_chains[0])
-            elif chains:
-                trigger_attack_scenario(chains[0])
+                trigger_attack_scenario(random.choice(mewat_chains))
+        elif choice == "3":
+            break
+        else:
+            print("Invalid choice.")
+
+def interactive_cli_menu(accounts, chains):
+    global STREAMING_ACTIVE, CURRENT_TPS
+    
+    # Start the continuous background worker thread
+    bg_thread = threading.Thread(target=continuous_background_worker, args=(accounts, chains), daemon=True)
+    bg_thread.start()
+    
+    while True:
+        status = "🟢 ACTIVE" if STREAMING_ACTIVE else "🔴 PAUSED"
+        print("\n=======================================================")
+        print("      Geo-CashWatch: Live Stream & Attack Controller   ")
+        print("=======================================================")
+        print(f"  Background Stream: {status} | Rate: {CURRENT_TPS} tx/sec")
+        print("=======================================================")
+        print("  [1] Toggle Continuous Background Stream")
+        print("  [2] Change Stream Volume (TPS)")
+        print("  [3] Inject Random Unique Cybercrime Attack")
+        print("  [4] Specific Attack Submenu")
+        print("  [5] Exit")
+        print("=======================================================")
+        choice = input("Enter command: ").strip()
+
+        if choice == "1":
+            STREAMING_ACTIVE = not STREAMING_ACTIVE
+            print(f"Stream is now {'ACTIVE' if STREAMING_ACTIVE else 'PAUSED'}")
+        elif choice == "2":
+            try:
+                new_tps = int(input("Enter new Transactions Per Second (e.g. 50, 1000): "))
+                if new_tps > 0:
+                    CURRENT_TPS = new_tps
+                    print(f"Volume increased to {CURRENT_TPS} tx/sec!")
+            except ValueError:
+                print("Invalid input.")
+        elif choice == "3":
+            if chains:
+                trigger_attack_scenario(random.choice(chains))
+        elif choice == "4":
+            attack_submenu(chains)
         elif choice == "5":
-            send_batch_transactions(accounts, batch_size=50)
-        elif choice == "6":
-            print("Exiting simulator. Good luck with SIH demo!")
+            print("Shutting down simulator...")
             break
         else:
             print("Invalid choice.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AEGIS-Geo Real-Time Stream Simulator")
-    parser.add_argument("--mode", choices=["interactive", "background", "attack"], default="interactive")
+    parser = argparse.ArgumentParser(description="Geo-CashWatch Stream Simulator")
     args = parser.parse_args()
 
     accs, chs = load_simulation_data()
@@ -247,10 +304,4 @@ if __name__ == "__main__":
         generate_mule_chains(250, 5000)
         accs, chs = load_simulation_data()
 
-    if args.mode == "background":
-        run_continuous_background_stream(accs, 5)
-    elif args.mode == "attack":
-        if chs:
-            trigger_attack_scenario(chs[0])
-    else:
-        interactive_cli_menu(accs, chs)
+    interactive_cli_menu(accs, chs)

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import asyncio
 import json
+import os
 
 from ai_engine.core.schemas import TransactionEvent, AccountMetadata
 from ai_engine.features.sliding_window import SlidingWindowFeatureEngine
@@ -32,6 +33,9 @@ from backend.alerts.dispatcher import dispatch_patrol_unit
 from backend.alerts.lien_manager import trigger_account_freeze
 from backend.alerts.report_generator import generate_incident_report
 from backend.alerts.broadcaster import broadcast_to_agencies
+from backend.streaming.kafka_client import kafka_client
+
+KAFKA_ENABLED = os.getenv("KAFKA_ENABLED", "false").lower() == "true"
 
 app = FastAPI(
     title="Geo-CashWatch API Gateway",
@@ -46,6 +50,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def startup_event():
+    if KAFKA_ENABLED:
+        await kafka_client.start_producer()
+        await kafka_client.start_consumer(process_kafka_message)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if KAFKA_ENABLED:
+        await kafka_client.stop_producer()
+        await kafka_client.stop_consumer()
 
 @app.get("/")
 def root_status():
@@ -152,65 +168,70 @@ async def broadcast_alert(payload: Dict[str, Any]):
         except Exception:
             pass
 
-@app.post("/api/v1/transactions/stream")
-async def ingest_transaction(tx: TransactionPayload):
-    # 1. Convert to validated TransactionEvent Pydantic model
+async def process_kafka_message(tx_data: dict):
     tx_event = TransactionEvent(
-        tx_id=tx.tx_id,
-        src_acc=tx.src_acc,
-        dest_acc=tx.dest_acc,
-        amount=tx.amount,
-        timestamp=tx.timestamp or time.time(),
-        channel=tx.channel,
-        device_id=tx.device_id,
-        ip_address=tx.ip
+        tx_id=tx_data.get("tx_id"),
+        src_acc=tx_data.get("src_acc"),
+        dest_acc=tx_data.get("dest_acc"),
+        amount=tx_data.get("amount"),
+        timestamp=tx_data.get("timestamp") or time.time(),
+        channel=tx_data.get("channel", "UPI"),
+        device_id=tx_data.get("device_id", "DEV_DEFAULT"),
+        ip_address=tx_data.get("ip", "192.168.1.1")
     )
 
-    # 2. Extract sliding-window behavioral features (< 2ms)
     feats = feature_engine.process_transaction(tx_event)
-    
-    # 3. Score Mule Risk via ML / Heuristics (< 15ms)
     score_res = mule_scorer.score(feats)
     
     tx_summary = {
-        "tx_id": tx.tx_id,
-        "src_acc": tx.src_acc,
-        "dest_acc": tx.dest_acc,
-        "amount": tx.amount,
-        "channel": tx.channel,
+        "tx_id": tx_event.tx_id,
+        "src_acc": tx_event.src_acc,
+        "dest_acc": tx_event.dest_acc,
+        "amount": tx_event.amount,
+        "channel": tx_event.channel,
         "fraud_probability": score_res.fraud_probability,
         "is_high_risk": score_res.is_high_risk,
         "reasons": score_res.reasons,
-        "lat": tx.lat,
-        "lon": tx.lon,
+        "lat": tx_data.get("lat"),
+        "lon": tx_data.get("lon"),
         "timestamp": tx_event.timestamp
     }
     recent_transactions.append(tx_summary)
     if len(recent_transactions) > 100:
         recent_transactions.pop(0)
 
-    # 4. If high risk, buffer for geospatial cash-out clustering
     if score_res.is_high_risk:
         flagged_events_buffer.append({
-            "account_number": tx.dest_acc,
-            "lat": tx.lat,
-            "lon": tx.lon,
-            "amount": tx.amount,
+            "account_number": tx_event.dest_acc,
+            "lat": tx_data.get("lat"),
+            "lon": tx_data.get("lon"),
+            "amount": tx_event.amount,
             "fraud_probability": score_res.fraud_probability,
             "timestamp": tx_event.timestamp
         })
         
-        # Recalculate active H3 hotspots
         global active_hotspots
         active_hotspots = geo_predictor.aggregate_hotspots(flagged_events_buffer[-50:])
         
-        # Broadcast alert to all connected command center dashboards
         asyncio.create_task(broadcast_alert({
             "type": "NEW_ALERT",
             "transaction": tx_summary,
             "hotspots": active_hotspots
         }))
+        
+    return score_res
 
+@app.post("/api/v1/transactions/stream")
+async def ingest_transaction(tx: TransactionPayload):
+    if KAFKA_ENABLED:
+        await kafka_client.publish_transaction(tx.dict())
+        return {
+            "status": "QUEUED_IN_KAFKA",
+            "message": "Transaction safely handed to message broker"
+        }
+    
+    score_res = await process_kafka_message(tx.dict())
+    
     return {
         "status": "PROCESSED",
         "fraud_score": score_res.fraud_probability,
