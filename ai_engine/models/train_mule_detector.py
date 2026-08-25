@@ -1,6 +1,6 @@
 """
 Train Mule Detector Model on Real Million-Row Kaggle PaySim Dataset
-Ingests Kaggle PaySim enriched dataset (mock_data/data/real_kaggle_mule_dataset.parquet),
+Ingests Kaggle PaySim enriched dataset (data_engine/data/mule_ml_training_dataset.parquet),
 trains Gradient Boosting / LightGBM Classifier, and saves trained model artifact.
 """
 import sys
@@ -30,10 +30,10 @@ from ai_engine.features.sliding_window import SlidingWindowFeatureEngine
 from ai_engine.core.schemas import TransactionEvent, AccountMetadata
 
 def load_dataset():
-    data_dir = ROOT_DIR / "mock_data" / "data"
-    parquet_path = data_dir / "real_kaggle_mule_dataset.parquet"
-    acc_file = data_dir / "accounts.json"
-    chain_file = data_dir / "chains.json"
+    data_dir = ROOT_DIR / "data_engine" / "data"
+    parquet_path = data_dir / "mule_ml_training_dataset.parquet"
+    acc_file = data_dir / "account_profiles.json"
+    chain_file = data_dir / "mule_transaction_chains.json"
 
     # 1. Preferred: Load Million-Row Real Kaggle Dataset
     if parquet_path.exists():
@@ -50,7 +50,7 @@ def load_dataset():
 
     # 2. Secondary: Replay Synthetic Mule Chains if parquet not downloaded yet
     if acc_file.exists() and chain_file.exists():
-        print("\n[INFO] Real Kaggle parquet not found. Replaying chains.json dataset...")
+        print("\n[INFO] Real Kaggle parquet not found. Replaying mule_transaction_chains.json dataset...")
         with open(acc_file, "r", encoding="utf-8") as f:
             accounts = json.load(f)
         with open(chain_file, "r", encoding="utf-8") as f:
@@ -59,7 +59,7 @@ def load_dataset():
 
     # 3. Fallback: Trigger download/process script
     print("\n[INFO] Triggering Real Kaggle Dataset download & feature augmentation...")
-    from mock_data.download_and_process_kaggle import download_paysim_dataset, enrich_and_augment_features
+    from data_engine.build_training_dataset import download_paysim_dataset, enrich_and_augment_features
     csv_file = download_paysim_dataset(data_dir)
     df = enrich_and_augment_features(csv_file, parquet_path, max_rows=500000)
     cols = [

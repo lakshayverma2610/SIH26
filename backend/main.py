@@ -45,7 +45,7 @@ app.add_middleware(
 # Core singletons
 feature_engine = SlidingWindowFeatureEngine()
 mule_scorer = MuleScorer()
-atms_path = ROOT_DIR / "mock_data" / "data" / "atms.json"
+atms_path = ROOT_DIR / "data_engine" / "data" / "atm_locations.json"
 geo_predictor = GeospatialPredictor(str(atms_path))
 
 # In-memory alert state & active websocket connections
@@ -56,7 +56,7 @@ active_hotspots = []
 ncrp_complaints_buffer = []
 
 # Load synthetic accounts metadata if available
-accounts_path = ROOT_DIR / "mock_data" / "data" / "accounts.json"
+accounts_path = ROOT_DIR / "data_engine" / "data" / "account_profiles.json"
 if accounts_path.exists():
     with open(accounts_path, "r", encoding="utf-8") as f:
         acc_list = json.load(f)

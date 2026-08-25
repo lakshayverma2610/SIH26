@@ -34,7 +34,7 @@ graph_db/
 ```python
 from graph_db.geo_predictor import GeospatialPredictor
 
-geo_predictor = GeospatialPredictor("mock_data/data/atms.json")
+geo_predictor = GeospatialPredictor("data_engine/data/atm_locations.json")
 active_hotspots = geo_predictor.aggregate_hotspots(flagged_events_buffer)
 ```
 
