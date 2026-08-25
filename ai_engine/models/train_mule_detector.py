@@ -1,7 +1,7 @@
 """
-Train Mule Detector Model
-Ingests Gaurvi's synthetic mule chains & accounts, replays them through 
-SlidingWindowFeatureEngine to extract real feature vectors, and trains ML Classifier.
+Train Mule Detector Model on Real Million-Row Kaggle PaySim Dataset
+Ingests Kaggle PaySim enriched dataset (mock_data/data/real_kaggle_mule_dataset.parquet),
+trains Gradient Boosting / LightGBM Classifier, and saves trained model artifact.
 """
 import sys
 import time
@@ -29,33 +29,47 @@ except (ImportError, OSError):
 from ai_engine.features.sliding_window import SlidingWindowFeatureEngine
 from ai_engine.core.schemas import TransactionEvent, AccountMetadata
 
-def load_data_sources():
+def load_dataset():
     data_dir = ROOT_DIR / "mock_data" / "data"
+    parquet_path = data_dir / "real_kaggle_mule_dataset.parquet"
     acc_file = data_dir / "accounts.json"
     chain_file = data_dir / "chains.json"
 
-    accounts = []
-    chains = []
+    # 1. Preferred: Load Million-Row Real Kaggle Dataset
+    if parquet_path.exists():
+        print(f"\n--- Loading Real Million-Row Kaggle Dataset: {parquet_path.name} ---")
+        df = pd.read_parquet(parquet_path)
+        print(f"[OK] Loaded {len(df):,} real Kaggle rows.")
+        cols = [
+            "amount", "v1_out", "v5_out", "v1_in", "fan_out_degree",
+            "dormancy_break", "kyc_risk", "device_reuse_count", "ip_reuse_count"
+        ]
+        X = df[cols]
+        y = df["label"]
+        return X, y
 
-    if acc_file.exists():
+    # 2. Secondary: Replay Synthetic Mule Chains if parquet not downloaded yet
+    if acc_file.exists() and chain_file.exists():
+        print("\n[INFO] Real Kaggle parquet not found. Replaying chains.json dataset...")
         with open(acc_file, "r", encoding="utf-8") as f:
             accounts = json.load(f)
-
-    if chain_file.exists():
         with open(chain_file, "r", encoding="utf-8") as f:
             chains = json.load(f)
+        return extract_features_from_chains(accounts, chains)
 
-    return accounts, chains
+    # 3. Fallback: Trigger download/process script
+    print("\n[INFO] Triggering Real Kaggle Dataset download & feature augmentation...")
+    from mock_data.download_and_process_kaggle import download_paysim_dataset, enrich_and_augment_features
+    csv_file = download_paysim_dataset(data_dir)
+    df = enrich_and_augment_features(csv_file, parquet_path, max_rows=500000)
+    cols = [
+        "amount", "v1_out", "v5_out", "v1_in", "fan_out_degree",
+        "dormancy_break", "kyc_risk", "device_reuse_count", "ip_reuse_count"
+    ]
+    return df[cols], df["label"]
 
 def extract_features_from_chains(accounts, chains):
-    """
-    Replays baseline transactions and multi-layer mule chains through SlidingWindowFeatureEngine.
-    Extracts authentic 9D feature vectors for training.
-    """
-    print(f"Replaying {len(chains)} mule chains and baseline transactions through SlidingWindowFeatureEngine...")
-    
     engine = SlidingWindowFeatureEngine()
-
     for acc in accounts:
         meta = AccountMetadata(
             account_id=acc["account_number"],
@@ -68,7 +82,6 @@ def extract_features_from_chains(accounts, chains):
     labels = []
     now = time.time()
 
-    # 1. Normal Baseline Traffic Feature Extraction (Label 0)
     normal_accs = [a for a in accounts if a.get("role") == "BASELINE_NORMAL"]
     if not normal_accs:
         normal_accs = accounts[:1000]
@@ -99,7 +112,6 @@ def extract_features_from_chains(accounts, chains):
         ])
         labels.append(0)
 
-    # 2. Fraudulent Mule Chains Feature Extraction (Label 1)
     for c_idx, chain in enumerate(chains):
         c_time = now - random.uniform(0, 1800)
         stolen = chain["total_stolen_amount"]
@@ -151,57 +163,50 @@ def extract_features_from_chains(accounts, chains):
         "dormancy_break", "kyc_risk", "device_reuse_count", "ip_reuse_count"
     ]
     df = pd.DataFrame(feature_rows, columns=cols)
-    return df, pd.Series(labels)
+    return df[cols], pd.Series(labels)
 
 def train_model():
-    accounts, chains = load_data_sources()
-    if not accounts or not chains:
-        print("[WARN] No mock data found. Generating data first...")
-        from mock_data.generate_atms import generate_atms
-        from mock_data.generate_mules import generate_mules
-        generate_atms(1500)
-        generate_mules(250, 5000)
-        accounts, chains = load_data_sources()
-
-    X, y = extract_features_from_chains(accounts, chains)
-    print(f"Extracted dataset shape: {X.shape} | Fraud instances: {sum(y)} / {len(y)}")
+    X, y = load_dataset()
+    print(f"Extracted Dataset Shape: {X.shape} | Real Fraud Instances: {sum(y):,} / {len(y):,}")
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-    print("\nTraining Classifier...")
+    print("\n--- Training High-Scale ML Model on Kaggle Dataset ---")
+    clf = None
     if lgb is not None:
         try:
             clf = lgb.LGBMClassifier(
-                n_estimators=150,
+                n_estimators=200,
                 learning_rate=0.03,
-                max_depth=6,
-                num_leaves=31,
+                max_depth=7,
+                num_leaves=63,
                 class_weight='balanced',
                 random_state=42,
                 n_jobs=-1
             )
             clf.fit(X_train, y_train)
             print("Successfully trained LightGBM Classifier.")
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] LightGBM training fallback: {e}")
             clf = None
 
-    if lgb is None or clf is None:
-        print("Using HistGradientBoostingClassifier (LightGBM equivalent fallback)...")
+    if clf is None:
+        print("Using HistGradientBoostingClassifier (LightGBM equivalent)...")
         clf = HistGradientBoostingClassifier(
-            max_iter=150,
+            max_iter=200,
             learning_rate=0.03,
-            max_depth=6,
+            max_depth=7,
             random_state=42
         )
         clf.fit(X_train, y_train)
 
-    print("\nEvaluating Model Performance:")
+    print("\n--- Evaluating Model Performance ---")
     y_pred = clf.predict(X_test)
     y_prob = clf.predict_proba(X_test)[:, 1]
 
     print(classification_report(y_test, y_pred))
     auc = roc_auc_score(y_test, y_prob)
-    print(f"ROC-AUC Score: {auc:.4f}")
+    print(f"ROC-AUC Score on Real Kaggle Dataset: {auc:.4f}")
 
     save_dir = Path(__file__).resolve().parent / "saved"
     save_dir.mkdir(exist_ok=True)
@@ -210,7 +215,7 @@ def train_model():
     with open(model_path, "wb") as f:
         pickle.dump(clf, f)
 
-    print(f"\n[OK] Trained Mule Detector model successfully saved to {model_path}")
+    print(f"\n[OK] ML Model successfully trained on Kaggle dataset and saved to {model_path}")
 
 if __name__ == "__main__":
     train_model()
