@@ -1,0 +1,39 @@
+{
+  "dataset_sources": [
+    "Kaggle PaySim Financial Dataset",
+    "IBM Financial Crime AML Network Graph",
+    "OpenStreetMap Overpass API",
+    "ICIJ FinCEN Suspicious Activity Reports Archive"
+  ],
+  "transaction_amount_distribution": {
+    "log_normal_mean": 9.8,
+    "log_normal_std": 1.4,
+    "min_amount_inr": 100.0,
+    "max_amount_inr": 2500000.0
+  },
+  "velocity_metrics": {
+    "baseline_normal_v1_out_max": 2,
+    "baseline_normal_v5_out_max": 4,
+    "mule_attack_v1_out_min": 3,
+    "mule_attack_v1_out_max": 8,
+    "mule_attack_v5_out_max": 15
+  },
+  "fan_out_degree_distribution": {
+    "baseline_normal_avg": 0.3,
+    "mule_layer1_receiver_fan_out": 4,
+    "mule_layer2_smurfing_fan_out_min": 3,
+    "mule_layer2_smurfing_fan_out_max": 8
+  },
+  "dormancy_and_kyc": {
+    "mule_layer1_dormancy_rate": 0.85,
+    "mule_layer1_dormant_days_min": 45,
+    "mule_layer1_dormant_days_max": 360,
+    "mule_layer2_kyc_failure_rate": 0.65
+  },
+  "geospatial_cashout": {
+    "hawkes_lambda_decay": 0.05,
+    "critical_window_minutes": 45,
+    "h3_resolution_zone": 8,
+    "h3_resolution_kiosk": 9
+  }
+}
