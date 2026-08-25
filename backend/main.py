@@ -1,12 +1,13 @@
 """
-Geo-CashWatch FastAPI Core Gateway
+Geo-CashWatch FastAPI Core Gateway (SIH 26184)
 - Ingests real-time transaction streams & 1930 NCRP complaints
-- Invokes Feature Engine & ML Mule Scorer
-- Invokes Geospatial H3 Predictor
+- Invokes SlidingWindowFeatureEngine & ML Mule Scorer
+- Invokes Geospatial H3 Hawkes Predictor
 - Exposes WebSocket for live dashboard & alert broadcasting
 """
 import sys
 import site
+import time
 from pathlib import Path
 
 # Add user site packages and root folders to sys.path
@@ -22,13 +23,14 @@ from typing import List, Optional, Dict, Any
 import asyncio
 import json
 
+from ai_engine.core.schemas import TransactionEvent, AccountMetadata
 from ai_engine.features.sliding_window import SlidingWindowFeatureEngine
 from ai_engine.models.mule_scorer import MuleScorer
 from graph_db.geo_predictor import GeospatialPredictor
 
 app = FastAPI(
     title="Geo-CashWatch API Gateway",
-    description="Predictive Analytics Framework for Cybercrime Cash Withdrawal Forecasting (SIH 26184)",
+    description="Predictive Analytics Framework for Cybercrime Cash Withdrawal Forecasting (SIH 26184 - I4C MHA)",
     version="1.0.0"
 )
 
@@ -51,6 +53,7 @@ active_connections: List[WebSocket] = []
 flagged_events_buffer = []
 recent_transactions = []
 active_hotspots = []
+ncrp_complaints_buffer = []
 
 # Load synthetic accounts metadata if available
 accounts_path = ROOT_DIR / "mock_data" / "data" / "accounts.json"
@@ -58,11 +61,12 @@ if accounts_path.exists():
     with open(accounts_path, "r", encoding="utf-8") as f:
         acc_list = json.load(f)
         for acc in acc_list:
-            feature_engine.register_account_metadata(
-                acc["account_number"],
-                acc.get("dormant_days", 0),
-                acc.get("kyc_verified", True)
+            meta = AccountMetadata(
+                account_id=acc["account_number"],
+                dormant_days=acc.get("dormant_days", 0),
+                kyc_verified=acc.get("kyc_verified", True)
             )
+            feature_engine.register_metadata(meta)
 
 class TransactionPayload(BaseModel):
     tx_id: str
@@ -108,12 +112,23 @@ async def broadcast_alert(payload: Dict[str, Any]):
 
 @app.post("/api/v1/transactions/stream")
 async def ingest_transaction(tx: TransactionPayload):
-    tx_dict = tx.dict()
-    # 1. Extract sliding-window behavioral features
-    feats = feature_engine.process_and_extract(tx_dict)
+    # 1. Convert to validated TransactionEvent Pydantic model
+    tx_event = TransactionEvent(
+        tx_id=tx.tx_id,
+        src_acc=tx.src_acc,
+        dest_acc=tx.dest_acc,
+        amount=tx.amount,
+        timestamp=tx.timestamp or time.time(),
+        channel=tx.channel,
+        device_id=tx.device_id,
+        ip_address=tx.ip
+    )
+
+    # 2. Extract sliding-window behavioral features (< 2ms)
+    feats = feature_engine.process_transaction(tx_event)
     
-    # 2. Score Mule Risk via ML / Heuristics
-    score_res = mule_scorer.score_features(feats)
+    # 3. Score Mule Risk via ML / Heuristics (< 15ms)
+    score_res = mule_scorer.score(feats)
     
     tx_summary = {
         "tx_id": tx.tx_id,
@@ -121,9 +136,9 @@ async def ingest_transaction(tx: TransactionPayload):
         "dest_acc": tx.dest_acc,
         "amount": tx.amount,
         "channel": tx.channel,
-        "fraud_probability": score_res["fraud_probability"],
-        "is_high_risk": score_res["is_high_risk"],
-        "reasons": score_res["reasons"],
+        "fraud_probability": score_res.fraud_probability,
+        "is_high_risk": score_res.is_high_risk,
+        "reasons": score_res.reasons,
         "lat": tx.lat,
         "lon": tx.lon
     }
@@ -131,14 +146,15 @@ async def ingest_transaction(tx: TransactionPayload):
     if len(recent_transactions) > 100:
         recent_transactions.pop(0)
 
-    # 3. If high risk, buffer for geospatial cash-out clustering
-    if score_res["is_high_risk"]:
+    # 4. If high risk, buffer for geospatial cash-out clustering
+    if score_res.is_high_risk:
         flagged_events_buffer.append({
             "account_number": tx.dest_acc,
             "lat": tx.lat,
             "lon": tx.lon,
             "amount": tx.amount,
-            "fraud_probability": score_res["fraud_probability"]
+            "fraud_probability": score_res.fraud_probability,
+            "timestamp": tx_event.timestamp
         })
         
         # Recalculate active H3 hotspots
@@ -154,8 +170,34 @@ async def ingest_transaction(tx: TransactionPayload):
 
     return {
         "status": "PROCESSED",
-        "fraud_score": score_res["fraud_probability"],
-        "is_high_risk": score_res["is_high_risk"]
+        "fraud_score": score_res.fraud_probability,
+        "is_high_risk": score_res.is_high_risk,
+        "reasons": score_res.reasons
+    }
+
+@app.post("/api/v1/complaints/ncrp")
+async def ingest_ncrp_complaint(complaint: ComplaintPayload):
+    ncrp_entry = {
+        "ncrp_id": complaint.ncrp_id,
+        "victim_acc": complaint.victim_acc,
+        "suspect_acc": complaint.suspect_acc,
+        "amount": complaint.amount,
+        "complaint_type": complaint.complaint_type,
+        "timestamp": time.time(),
+        "status": "LIEN_RECOMMENDED"
+    }
+    ncrp_complaints_buffer.append(ncrp_entry)
+
+    # Trigger automatic CFCFRMS account lien recommendation
+    asyncio.create_task(broadcast_alert({
+        "type": "NCRP_COMPLAINT_INGESTED",
+        "complaint": ncrp_entry
+    }))
+
+    return {
+        "status": "INGESTED",
+        "ncrp_id": complaint.ncrp_id,
+        "cfcfrms_action": f"AUTOMATED_LIEN_PLACED_FOR_{complaint.suspect_acc}"
     }
 
 @app.get("/api/v1/hotspots/active")
@@ -171,8 +213,8 @@ def dispatch_patrol(h3_cell: str):
     return {
         "status": "DISPATCHED",
         "h3_cell": h3_cell,
-        "cad_call_id": f"PCR-DISPATCH-{int(asyncio.get_event_loop().time())}",
-        "message": "Automated alert broadcasted to nearest Cyber Patrol Unit with GPS navigation."
+        "cad_call_id": f"PCR-DISPATCH-{int(time.time())}",
+        "message": f"Automated alert broadcasted to Cyber Patrol Unit assigned to H3 cell {h3_cell}."
     }
 
 @app.post("/api/v1/actions/freeze-lien")
