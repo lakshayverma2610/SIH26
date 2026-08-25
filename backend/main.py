@@ -28,6 +28,11 @@ from ai_engine.features.sliding_window import SlidingWindowFeatureEngine
 from ai_engine.models.mule_scorer import MuleScorer
 from graph_db.geo_predictor import GeospatialPredictor
 
+from backend.alerts.dispatcher import dispatch_patrol_unit
+from backend.alerts.lien_manager import trigger_account_freeze
+from backend.alerts.report_generator import generate_incident_report
+from backend.alerts.broadcaster import broadcast_to_agencies
+
 app = FastAPI(
     title="Geo-CashWatch API Gateway",
     description="Predictive Analytics Framework for Cybercrime Cash Withdrawal Forecasting (SIH 26184 - I4C MHA)",
@@ -117,6 +122,12 @@ class ReportPayload(BaseModel):
     hotspot_id: str
     format: str = "MARKDOWN"
     include_map_coordinates: bool = True
+
+class BroadcastPayload(BaseModel):
+    hotspot_id: str
+    severity: str = "CRITICAL"
+    message: Optional[str] = "Immediate cash-out threat detected."
+    channels: Optional[List[str]] = None
 
 @app.websocket("/ws/alerts")
 async def websocket_alerts_endpoint(websocket: WebSocket):
@@ -331,30 +342,76 @@ def get_recent_transactions():
 
 @app.post("/api/v1/actions/dispatch-patrol")
 def dispatch_patrol(payload: DispatchPatrolPayload):
-    return {
-        "status": "DISPATCHED",
-        "h3_cell": payload.h3_cell,
-        "cad_call_id": f"PCR-DISPATCH-{int(time.time())}",
-        "message": f"Automated alert broadcasted to Cyber Patrol Unit assigned to H3 cell {payload.h3_cell}."
+    hotspot_data = {
+        "latitude": payload.destination_lat,
+        "longitude": payload.destination_lon,
+        "location_name": f"H3 Cell: {payload.h3_cell}"
     }
+    
+    try:
+        alert = dispatch_patrol_unit(hotspot_data)
+        return {
+            "status": "DISPATCHED",
+            "h3_cell": payload.h3_cell,
+            "cad_call_id": f"PCR-DISPATCH-{int(time.time())}",
+            "maps_url": alert.get("maps_url"),
+            "message": alert.get("message")
+        }
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
 
 @app.post("/api/v1/actions/freeze-lien")
 def trigger_1930_freeze(payload: FreezeLienPayload):
-    acc = payload.account_number or (payload.account_numbers[0] if payload.account_numbers else "UNKNOWN")
-    return {
-        "status": "LIEN_PLACED",
-        "account_number": acc,
-        "system": "CFCFRMS-1930",
-        "message": f"Debit & ATM withdrawal permissions locked for account {acc}."
-    }
+    accounts = payload.account_numbers if payload.account_numbers else []
+    if payload.account_number and payload.account_number not in accounts:
+        accounts.append(payload.account_number)
+        
+    try:
+        result = trigger_account_freeze(accounts)
+        return {
+            "status": "LIEN_PLACED",
+            "system": "CFCFRMS-1930",
+            "message": f"Debit & ATM withdrawal permissions locked for {len(accounts)} accounts.",
+            "details": result
+        }
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
 
 @app.post("/api/v1/actions/generate-report")
 def generate_report(payload: ReportPayload):
-    return {
-        "status": "GENERATED",
-        "report_id": f"REP-{payload.hotspot_id}-{int(time.time())}",
-        "content": f"# Incident Report: {payload.hotspot_id}\n\nAutomated risk report generated for cash-out hotspot {payload.hotspot_id}.\n\n- Format: {payload.format}\n- Generated at: {time.time()}"
+    # Retrieve mock incident data (in production this would query DB using hotspot_id)
+    incident_data = {
+        "victim_complaint": f"Incident associated with hotspot {payload.hotspot_id}",
+        "mule_hops": ["Layer 1 Mule Hop", "Layer 2 Smurfing Split"],
+        "risk_scores": {"transaction_risk": 0.98, "cluster_risk": 0.95},
+        "predicted_atm_cluster": f"H3 Cell: {payload.hotspot_id}",
+        "actions_taken": ["Report requested via Command Center"]
     }
+    
+    try:
+        file_path = generate_incident_report(incident_data, f"incident_report_{payload.hotspot_id}.md")
+        return {
+            "status": "GENERATED",
+            "report_id": f"REP-{payload.hotspot_id}-{int(time.time())}",
+            "file_path": file_path,
+            "message": f"Report successfully generated and saved to {file_path}"
+        }
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
+
+@app.post("/api/v1/actions/broadcast-alert")
+def trigger_external_broadcast(payload: BroadcastPayload):
+    alert_data = {
+        "hotspot_id": payload.hotspot_id,
+        "severity": payload.severity,
+        "message": payload.message
+    }
+    
+    try:
+        result = broadcast_to_agencies(alert_data, channels=payload.channels)
+        return result
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
 
 @app.get("/api/v1/system/status")
 def get_system_status():
