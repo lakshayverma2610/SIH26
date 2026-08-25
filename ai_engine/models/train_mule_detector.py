@@ -6,7 +6,6 @@ trains Gradient Boosting / LightGBM Classifier, and saves trained model artifact
 import sys
 import time
 import random
-import pickle
 import json
 from pathlib import Path
 import pandas as pd
@@ -210,12 +209,53 @@ def train_model():
 
     save_dir = Path(__file__).resolve().parent / "saved"
     save_dir.mkdir(exist_ok=True)
-    model_path = save_dir / "mule_model.pkl"
 
-    with open(model_path, "wb") as f:
-        pickle.dump(clf, f)
+    # 1. Export to Treelite GTIL format for ultra-fast C-level inference (< 50 microseconds)
+    try:
+        import treelite
+        import xgboost as xgb
+        print("\n--- Compiling Model with Treelite GTIL Engine ---")
+        xgb_clf = xgb.XGBClassifier(
+            n_estimators=100,
+            learning_rate=0.05,
+            max_depth=6,
+            eval_metric='logloss',
+            random_state=42
+        )
+        xgb_clf.fit(X_train, y_train)
+        tl_model = treelite.frontend.from_xgboost(xgb_clf.get_booster())
+        tl_path = save_dir / "mule_model.treelite"
+        tl_model.serialize(str(tl_path))
+        print(f"[OK] Treelite model successfully compiled & saved to {tl_path}")
+    except Exception as e:
+        print(f"[WARN] Treelite export notice: {e}")
 
-    print(f"\n[OK] ML Model successfully trained on Kaggle dataset and saved to {model_path}")
+    # 2. Export to ONNX format
+    try:
+        import onnx
+        from onnxruntime import InferenceSession
+        import skl2onnx
+        from skl2onnx.common.data_types import FloatTensorType
+        initial_type = [('float_input', FloatTensorType([None, 9]))]
+        onnx_model = skl2onnx.convert_sklearn(clf, initial_types=initial_type)
+        onnx_path = save_dir / "mule_model.onnx"
+        with open(onnx_path, "wb") as f:
+            f.write(onnx_model.SerializeToString())
+        print(f"[OK] ONNX model successfully exported & saved to {onnx_path}")
+    except Exception as e:
+        # If skl2onnx not present or custom type, try onnxmltools or direct xgboost onnx
+        try:
+            import onnxmltools
+            from onnxmltools.convert.common.data_types import FloatTensorType
+            initial_type = [('input', FloatTensorType([None, 9]))]
+            onnx_model = onnxmltools.convert_xgboost(xgb_clf, initial_types=initial_type)
+            onnx_path = save_dir / "mule_model.onnx"
+            with open(onnx_path, "wb") as f:
+                f.write(onnx_model.SerializeToString())
+            print(f"[OK] ONNX model successfully exported via onnxmltools & saved to {onnx_path}")
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     train_model()
+

@@ -153,6 +153,45 @@ def trigger_attack_scenario(chain):
     print(f"\n🎯 Target Physical Cash Withdrawal Hotspot: {terminal.get('bank_name')} ({terminal.get('h3_res9')})")
     print("=======================================================\n")
 
+BATCH_API_URL = "http://localhost:8000/api/v1/transactions/batch"
+
+def send_batch_transactions(accounts, batch_size=50):
+    print(f"\n🚀 Sending High-Speed Batch Burst ({batch_size} transactions) to FastAPI Treelite Engine...")
+    tx_list = []
+    now = time.time()
+    normal_accounts = [a for a in accounts if a.get("role") == "BASELINE_NORMAL"] or accounts
+
+    for i in range(batch_size):
+        src = random.choice(normal_accounts)
+        dest = random.choice(normal_accounts)
+        while dest["account_number"] == src["account_number"]:
+            dest = random.choice(normal_accounts)
+
+        tx_list.append({
+            "tx_id": f"TX_BATCH_{int(now)}_{i:03d}",
+            "src_acc": src["account_number"],
+            "dest_acc": dest["account_number"],
+            "amount": round(random.uniform(500.0, 45000.0), 2),
+            "channel": random.choice(["UPI", "IMPS", "NEFT"]),
+            "device_id": src.get("device_id", "DEV_DEFAULT"),
+            "ip": src.get("ip_address", "49.36.1.1"),
+            "lat": 28.6304 + random.uniform(-0.03, 0.03),
+            "lon": 77.2773 + random.uniform(-0.03, 0.03),
+            "timestamp": now + (i * 0.1)
+        })
+
+    try:
+        t0 = time.perf_counter()
+        res = requests.post(BATCH_API_URL, json={"transactions": tx_list}, timeout=5.0)
+        t1 = time.perf_counter()
+        if res.status_code == 200:
+            data = res.json()
+            print(f"[OK] Batch Ingested! Engine: {data.get('engine')} | Processed: {data.get('total_ingested')} tx | Server Latency: {data.get('latency_ms')} ms | Client Roundtrip: {(t1-t0)*1000:.2f} ms")
+        else:
+            print(f"[ERR] Batch failed: {res.status_code} - {res.text}")
+    except Exception as e:
+        print(f"[ERR] Batch connection failed: {e}")
+
 def interactive_cli_menu(accounts, chains):
     while True:
         print("\n=======================================================")
@@ -162,9 +201,10 @@ def interactive_cli_menu(accounts, chains):
         print("  [2] Trigger Random Cybercrime Attack Scenario")
         print("  [3] Trigger Jamtara APK RAT Fraud Scenario")
         print("  [4] Trigger Mewat Sextortion / AePS Scenario")
-        print("  [5] Exit Simulator")
+        print("  [5] Trigger High-Throughput Batch Burst (50 tx via Treelite)")
+        print("  [6] Exit Simulator")
         print("=======================================================")
-        choice = input("Enter option (1-5): ").strip()
+        choice = input("Enter option (1-6): ").strip()
 
         if choice == "1":
             run_continuous_background_stream(accounts, rate_per_sec=5)
@@ -186,6 +226,8 @@ def interactive_cli_menu(accounts, chains):
             elif chains:
                 trigger_attack_scenario(chains[0])
         elif choice == "5":
+            send_batch_transactions(accounts, batch_size=50)
+        elif choice == "6":
             print("Exiting simulator. Good luck with SIH demo!")
             break
         else:
