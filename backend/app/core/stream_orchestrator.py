@@ -21,7 +21,7 @@ from backend.app.config import (
     ACCOUNTS_DATA_PATH
 )
 from backend.app.core.connection_manager import ws_manager
-from backend.app.core.fallback_geo import get_geospatial_predictor
+from graph_db.geo_predictor import GeospatialPredictor
 
 # Import AI Engine Singletons
 from ai_engine.features.sliding_window import SlidingWindowFeatureEngine
@@ -36,7 +36,7 @@ class StreamOrchestrator:
         self.mule_scorer = MuleScorer()
 
         # 2. Initialize Geospatial Predictor
-        self.geo_predictor = get_geospatial_predictor(str(ATMS_DATA_PATH) if ATMS_DATA_PATH.exists() else None)
+        self.geo_predictor = GeospatialPredictor(str(ATMS_DATA_PATH) if ATMS_DATA_PATH.exists() else None)
 
         # 3. In-memory State Buffers
         self.recent_transactions: List[Dict[str, Any]] = []
