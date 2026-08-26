@@ -36,3 +36,8 @@ venv.bak/
 # OS specific
 .DS_Store
 Thumbs.db
+
+# Databases
+*.db
+*.db-shm
+*.db-wal
