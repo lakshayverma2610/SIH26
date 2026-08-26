@@ -9,34 +9,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-DEFAULT_HUEY_DB = ROOT_DIR / "data_simulation" / "data" / "huey_tasks.db"
-DEFAULT_HUEY_DB.parent.mkdir(parents=True, exist_ok=True)
-
-huey = None
+from huey import RedisHuey
+import redis
 
 try:
-    from huey import RedisHuey, SqliteHuey
-    import redis
-
-    # Test Redis connectivity first
-    if "redis://" in REDIS_URL:
-        try:
-            r = redis.Redis.from_url(REDIS_URL, socket_timeout=0.5)
-            r.ping()
-            huey = RedisHuey("geo-cashwatch-tasks", url=REDIS_URL, results=True)
-            logger.info(f"⚡ Huey Task Queue connected to Redis Master: {REDIS_URL}")
-        except Exception:
-            huey = SqliteHuey(filename=str(DEFAULT_HUEY_DB), results=True)
-            logger.info(f"Huey Task Queue using SqliteHuey fallback: {DEFAULT_HUEY_DB}")
-    else:
-        huey = SqliteHuey(filename=str(DEFAULT_HUEY_DB), results=True)
-        logger.info(f"Huey Task Queue using SqliteHuey: {DEFAULT_HUEY_DB}")
+    r = redis.Redis.from_url(REDIS_URL, socket_timeout=1.0)
+    r.ping()
+    huey = RedisHuey("geo-cashwatch-tasks", url=REDIS_URL, results=True)
+    logger.info(f"⚡ Huey Distributed Task Queue connected to Redis: {REDIS_URL}")
 except Exception as e:
-    try:
-        from huey import SqliteHuey
-        huey = SqliteHuey(filename=str(DEFAULT_HUEY_DB), results=True)
-        logger.info(f"Huey initialized with SqliteHuey fallback ({e})")
-    except Exception as err:
-        logger.error(f"Failed to initialize Huey: {err}")
-        huey = None
+    logger.error(f"❌ Failed to connect to Redis for Huey Tasks at {REDIS_URL}: {e}")
+    huey = RedisHuey("geo-cashwatch-tasks", url=REDIS_URL, results=True)

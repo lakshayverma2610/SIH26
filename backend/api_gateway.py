@@ -249,7 +249,17 @@ async def process_kafka_message(tx_data: dict):
         global active_hotspots
         active_hotspots = geo_predictor.aggregate_hotspots(flagged_events_buffer[-50:])
 
-        # Persist updated hotspots to database
+        # 1. ⚡ TRIGGER HUEY FIRST: Autonomous Emergency Bank Freeze across identified mules
+        for hs in active_hotspots:
+            mule_accs = hs.get("mule_accounts", [])
+            if mule_accs and hs.get("aggregate_risk_score", 0.0) >= 0.75:
+                task_async_trigger_cfcfrms_lien(
+                    suspect_accounts=mule_accs,
+                    stolen_amount=hs.get("total_funds_at_risk", 0.0),
+                    ncrp_ack=f"AUTO_NCRP_{int(time.time())}"
+                )
+
+        # 2. Persist updated hotspots to database
         db = ScopedSession()
         try:
             for hs in active_hotspots:

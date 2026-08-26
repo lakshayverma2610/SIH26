@@ -11,24 +11,19 @@ from backend.database.models import Base
 
 logger = logging.getLogger(__name__)
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-DEFAULT_SQLITE_PATH = ROOT_DIR / "data_simulation" / "data" / "geocashwatch.db"
-DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_SQLITE_PATH}")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgrespassword@localhost:5432/geocashwatch")
 
 # Normalize postgres:// to postgresql:// for SQLAlchemy 2.0
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Connection pool configurations
-engine_kwargs = {}
-if DATABASE_URL.startswith("sqlite"):
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
-else:
-    engine_kwargs["pool_size"] = 10
-    engine_kwargs["max_overflow"] = 20
-    engine_kwargs["pool_pre_ping"] = True
+# Production PostgreSQL Connection pool configurations
+engine_kwargs = {
+    "pool_size": 20,
+    "max_overflow": 40,
+    "pool_pre_ping": True,
+    "pool_recycle": 3600
+}
 
 engine = create_engine(DATABASE_URL, **engine_kwargs)
 SessionFactory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
