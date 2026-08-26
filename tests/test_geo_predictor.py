@@ -9,9 +9,9 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from graph_db.h3_indexer import H3SpatialIndexer
-from graph_db.cluster_engine import SpatioTemporalClusterEngine
-from graph_db.geo_predictor import GeospatialPredictor
+from geospatial_engine.h3_indexer import H3SpatialIndexer
+from geospatial_engine.cluster_engine import SpatioTemporalClusterEngine
+from geospatial_engine.geo_predictor import GeospatialPredictor
 
 
 def test_h3_indexer():

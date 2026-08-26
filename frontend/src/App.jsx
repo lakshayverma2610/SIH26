@@ -61,11 +61,11 @@ function App() {
             <div className="legend-row">Patrol dispatches <b>{actionHistory.total_dispatches || 0}</b></div>
             <div className="legend-row">Liens placed <b>{actionHistory.total_liens || 0}</b></div>
           </div>
-          <div className="coverage"><span>MONITORING REGION</span><strong>Delhi NCR</strong><small>28.6139° N · 77.2090° E</small></div>
+          <div className="coverage"><span>MONITORING REGION</span><strong>PAN-INDIA GRID</strong><small>28 States & 8 UTs (Live)</small></div>
         </aside>
 
         <div className="map-stage">
-          <ThreatMap hotspots={hotspots} selected={selected} onSelect={setSelected} />
+          <ThreatMap hotspots={hotspots} transactions={transactions} selected={selected} onSelect={setSelected} />
           <div className="map-label"><i /> PREDICTIVE COVERAGE ACTIVE</div>
         </div>
 

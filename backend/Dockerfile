@@ -11,12 +11,12 @@ RUN apt-get update && apt-get install -y \
 COPY backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire workspace necessary for the backend (backend, ai_engine, graph_db)
+# Copy the entire workspace necessary for the backend
 COPY backend /app/backend
-COPY ai_engine /app/ai_engine
-COPY graph_db /app/graph_db
-COPY data_engine /app/data_engine
+COPY ml_inference /app/ml_inference
+COPY geospatial_engine /app/geospatial_engine
+COPY data_simulation /app/data_simulation
 
 ENV PYTHONPATH=/app
 
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "backend.api_gateway:app", "--host", "0.0.0.0", "--port", "8000"]

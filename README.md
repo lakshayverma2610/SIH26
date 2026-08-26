@@ -11,26 +11,58 @@ For the full end-to-end architecture, data flow pipeline, and testing instructio
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Kubernetes & Docker Only)
 
-### 1. Start the Backend (FastAPI + WebSockets)
+> **Note:** This application requires a Kubernetes cluster (e.g., Minikube, Docker Desktop K8s, or a cloud provider) and does not support local terminal execution.
+
+### 1. Build the Docker Images
 ```bash
-.venv/bin/python -m uvicorn backend.main:app --port 8000 --host 0.0.0.0 --reload
+# Build Backend Image
+docker build -t geo-cashwatch-backend:latest ./backend
+
+# Build Frontend Image
+docker build -t geo-cashwatch-frontend:latest ./frontend
 ```
 
-### 2. Start the Frontend Dashboard (React + Leaflet)
+### 2. Deploy Enterprise Infrastructure (Postgres, Redis, Kafka)
 ```bash
-cd frontend
-npm run dev
+# 1. Deploy Persistent Relational Database (PostgreSQL)
+kubectl apply -f k8s/postgres-deployment.yaml
+
+# 2. Deploy In-Memory Datastore & Geospatial Cache (Redis)
+kubectl apply -f k8s/redis-deployment.yaml
+
+# 3. Deploy Event Streaming Broker (Apache Kafka)
+kubectl apply -f k8s/kafka-cluster.yaml
+```
+
+### 3. Deploy Application Gateway & Async Huey Workers
+```bash
+# Deploy Huey Background Task Workers (ERSS 112 & CFCFRMS 1930)
+kubectl apply -f k8s/huey-worker-deployment.yaml
+
+# Deploy Core FastAPI Gateway
+kubectl apply -f k8s/backend-deployment.yaml
+
+# Deploy React Command Center Dashboard
+kubectl apply -f k8s/frontend-deployment.yaml
+```
+
+### 4. (Optional) Seed Redis Database
+To seed 5,000 enterprise account profiles and 1,500 ATM geospatial coordinates into Redis:
+```bash
+kubectl run -i --tty redis-seeder --image=geo-cashwatch-backend:latest --restart=Never --env="REDIS_URL=redis://redis:6379/0" -- python data_simulation/seed_redis.py
+```
+
+### 5. Access the Dashboard
+Wait for the pods to initialize, then forward the ports:
+```bash
+kubectl port-forward svc/frontend-service 5173:80
 ```
 Access the dashboard at `http://localhost:5173`.
 
-### 3. Launch Live Real-Time Simulator & Inject Attacks
+### 6. Launch Live Real-Time Simulator
+To inject attacks, run the simulator inside a Kubernetes Job or a temporary debug pod that has access to the internal Kafka network:
 ```bash
-.venv/bin/python data_engine/live_stream_simulator.py
+kubectl run -i --tty simulator-pod --image=geo-cashwatch-backend:latest --restart=Never -- python data_simulation/kafka_producer.py
 ```
-Use the interactive CLI menu:
-- `1`: Normal baseline transaction stream
-- `2`: Random cybercrime attack scenario
-- `3`: Jamtara APK RAT fraud
-- `4`: Mewat Sextortion / AePS biometric fraud
