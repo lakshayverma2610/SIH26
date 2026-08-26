@@ -1,0 +1,131 @@
+version: '3.8'
+
+services:
+  # ==============================================================================
+  # 1. PERSISTENT RELATIONAL DATABASE
+  # ==============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: geocashwatch-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: geocashwatch
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d geocashwatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ==============================================================================
+  # 2. IN-MEMORY FEATURE STORE & GEOSPATIAL CACHE
+  # ==============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: geocashwatch-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ==============================================================================
+  # 3. KAFKA EVENT STREAMING BUS
+  # ==============================================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: geocashwatch-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: geocashwatch-kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  # ==============================================================================
+  # 4. GEO-CASHWATCH FASTAPI ORCHESTRATOR
+  # ==============================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: geocashwatch-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/geocashwatch
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      CFCFRMS_CLIENT_ID: LEA_CYBERCELL_DELHI
+    ports:
+      - "8000:8000"
+
+  # ==============================================================================
+  # 5. ASYNC HUEY WORKER (CAD 112 & 1930 LIEN QUEUE)
+  # ==============================================================================
+  huey-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: geocashwatch-huey-worker
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - redis
+      - postgres
+    environment:
+      DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/geocashwatch
+      REDIS_URL: redis://redis:6379/0
+    command: ["python", "-m", "backend.tasks.worker"]
+
+  # ==============================================================================
+  # 6. REACT COMMAND CENTER DASHBOARD
+  # ==============================================================================
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: geocashwatch-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000/ws/alerts
+    ports:
+      - "5173:5173"
+
+volumes:
+  postgres_data:
+  redis_data:

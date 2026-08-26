@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: geo-cashwatch-huey-worker
+  labels:
+    app: geo-cashwatch-huey-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: geo-cashwatch-huey-worker
+  template:
+    metadata:
+      labels:
+        app: geo-cashwatch-huey-worker
+    spec:
+      containers:
+      - name: huey-worker
+        image: geo-cashwatch-backend:latest
+        imagePullPolicy: IfNotPresent
+        command: ["python", "-m", "backend.tasks.worker"]
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://postgres:postgres@postgres:5432/geocashwatch"
+        - name: REDIS_URL
+          value: "redis://redis:6379/0"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
