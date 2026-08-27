@@ -1,30 +1,36 @@
-# Geo-CashWatch Frontend
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
-React command dashboard for SIH 26184. It visualizes predicted H3 cash-out hotspots, scored transactions, nearby ATM/AePS terminals, and simulated law-enforcement actions.
+## Getting Started
 
-## Run locally
+First, run the development server:
 
 ```bash
-npm install
-copy .env.example .env
 npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
 ```
 
-The default `.env.example` enables demo mode, so the UI works without the backend. Set `VITE_USE_MOCK_STREAM=false` to consume the FastAPI WebSocket at `ws://localhost:8000/ws/alerts`.
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-## Backend integration
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
-- WebSocket: `GET /ws/alerts`
-- Patrol dispatch: `POST /api/v1/actions/dispatch-patrol`
-- Debit freeze: `POST /api/v1/actions/freeze-lien`
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
-Supported WebSocket events: `INITIAL_STATE`, `NEW_TRANSACTION`, `NEW_ALERT`, and `HOTSPOTS_UPDATED`.
+## Learn More
 
-The dashboard also responds to `COMPLAINT_REGISTERED`, `PATROL_DISPATCHED`, and `LIEN_PLACED` operational events. Hotspots accept both the harmonized backend fields and the enriched Graph-DB fields, including GeoJSON boundaries, Res-9 cells, mule account lists, and ranked ATM metadata.
+To learn more about Next.js, take a look at the following resources:
 
-## Checks
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 
-```bash
-npm run lint
-npm run build
-```
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
