@@ -1,5 +1,5 @@
 import Navbar from "@/components/layout/Navbar";
-import Hero from "./landing/components/Hero";
+import CinematicJourney from "./landing/components/CinematicJourney";
 import ProblemSection from "./landing/components/ProblemSection";
 import HowItWorks from "./landing/components/HowItWorks";
 import Capabilities from "./landing/components/Capabilities";
@@ -15,14 +15,14 @@ export default function Home() {
     <>
       <Navbar />
       <main>
-        <Hero />
+        <CinematicJourney />
         <ProblemSection />
         <HowItWorks />
         <Capabilities />
         <IntelligencePreview />
         <RealTimeResponse />
-        <ImpactSection />
         <SecuritySection />
+        <ImpactSection />
         <FinalCTA />
       </main>
       <Footer />
